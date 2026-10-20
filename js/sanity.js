@@ -52,7 +52,7 @@ window.Blog = (function () {
           ${CARD},
           articleImage${IMAGE},
           articleImageMobile${IMAGE},
-          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}}
+          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}, _type == "gallery" => {caption, "images": images[]${IMAGE.slice(0, -1)}, caption}}}
         },
         "others": *[_type == "post" && slug.current != $slug && publishedAt <= now()] | order(publishedAt desc)[0...12]{${CARD}}
       }`, { slug });
@@ -219,6 +219,150 @@ window.Blog = (function () {
     });
   }
 
+  // ---------- Image gallery + lightbox ----------
+
+  // Keeps the hotspot in view when CSS crops the image into a grid cell or carousel card
+  function focus(img) {
+    const h = img.hotspot, c = img.crop || {};
+    if (!h) return '50% 50%';
+    const cl = c.left || 0, cr = c.right || 0, ct = c.top || 0, cb = c.bottom || 0;
+    const x = ((h.x - cl) / (1 - cl - cr)) * 100, y = ((h.y - ct) / (1 - ct - cb)) * 100;
+    return `${Math.min(100, Math.max(0, x)).toFixed(1)}% ${Math.min(100, Math.max(0, y)).toFixed(1)}%`;
+  }
+
+  // Desktop: grid laid out by image count (1–4); with 5–10, the first 4 show and the
+  // 4th tile reads "+N". Phones: swipeable carousel of every image. All open in the lightbox.
+  function gallery(b) {
+    const imgs = b.images.filter(img => img?.asset?.url).slice(0, 10);
+    if (!imgs.length) return '';
+    const n = imgs.length;
+    const more = n - 4;
+    const items = imgs.map((img, i) => `
+      <button class="gallery-item" type="button" data-index="${i}"
+        data-full="${esc(imageUrl(img, 1800))}" data-caption="${esc(img.caption || '')}"
+        aria-label="Open image ${i + 1} of ${n}${img.alt ? `: ${esc(img.alt)}` : ''}">
+        <img src="${esc(imageUrl(img, 800))}" srcset="${esc(imageUrl(img, 800))} 1x, ${esc(imageUrl(img, 1600))} 2x"
+          alt="${esc(img.alt || '')}" loading="lazy" decoding="async" style="object-position: ${focus(img)}" />
+        ${i === 3 && more > 0 ? `<span class="gallery-more" aria-hidden="true">+${more}</span>` : ''}
+      </button>`).join('');
+    const dots = n > 1
+      ? `<div class="gallery-dots" aria-hidden="true">${imgs.map((_, i) => `<span${i === 0 ? ' class="is-active"' : ''}></span>`).join('')}</div>`
+      : '';
+    return `
+      <figure class="gallery" data-count="${Math.min(n, 4)}" data-total="${n}">
+        <div class="gallery-track">${items}</div>
+        ${dots}
+        ${b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : ''}
+      </figure>`;
+  }
+
+  const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+  const ICON_PREV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>';
+  const ICON_NEXT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+
+  // One shared full-screen viewer for every gallery on the page
+  const lightbox = (() => {
+    let el, img, caption, count, prev, next, items = [], index = 0, lastFocus = null, touchX = null;
+
+    function build() {
+      el = document.createElement('div');
+      el.className = 'lightbox';
+      el.hidden = true;
+      el.setAttribute('role', 'dialog');
+      el.setAttribute('aria-modal', 'true');
+      el.setAttribute('aria-label', 'Image viewer');
+      el.innerHTML = `
+        <button class="lb-btn lb-close" type="button" aria-label="Close">${ICON_X}</button>
+        <button class="lb-btn lb-prev" type="button" aria-label="Previous image">${ICON_PREV}</button>
+        <figure class="lb-figure"><img class="lb-img" alt="" /><figcaption class="lb-caption"></figcaption></figure>
+        <button class="lb-btn lb-next" type="button" aria-label="Next image">${ICON_NEXT}</button>
+        <div class="lb-count" aria-live="polite"></div>`;
+      document.body.append(el);
+      img = el.querySelector('.lb-img');
+      caption = el.querySelector('.lb-caption');
+      count = el.querySelector('.lb-count');
+      prev = el.querySelector('.lb-prev');
+      next = el.querySelector('.lb-next');
+      el.querySelector('.lb-close').addEventListener('click', close);
+      prev.addEventListener('click', () => show(index - 1));
+      next.addEventListener('click', () => show(index + 1));
+      // Click on the dark backdrop closes; clicks on the image or buttons don't
+      el.addEventListener('click', e => { if (e.target === el || e.target.classList.contains('lb-figure')) close(); });
+      el.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+      el.addEventListener('touchend', e => {
+        if (touchX === null) return;
+        const dx = e.changedTouches[0].clientX - touchX;
+        touchX = null;
+        if (Math.abs(dx) > 50 && items.length > 1) show(index + (dx < 0 ? 1 : -1));
+      });
+      document.addEventListener('keydown', e => {
+        if (el.hidden) return;
+        if (e.key === 'Escape') close();
+        else if (e.key === 'ArrowLeft') show(index - 1);
+        else if (e.key === 'ArrowRight') show(index + 1);
+        else if (e.key === 'Tab') { // keep focus inside the viewer
+          const f = [...el.querySelectorAll('.lb-btn')].filter(b => !b.hidden);
+          const i = f.indexOf(document.activeElement);
+          e.preventDefault();
+          f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+        }
+      });
+    }
+
+    function show(i) {
+      index = (i + items.length) % items.length;
+      const it = items[index];
+      img.src = it.src;
+      img.alt = it.alt;
+      caption.textContent = it.caption;
+      caption.hidden = !it.caption;
+      count.textContent = items.length > 1 ? `${index + 1} / ${items.length}` : '';
+      prev.hidden = next.hidden = items.length < 2;
+    }
+
+    function open(list, i, trigger) {
+      if (!el) build();
+      items = list;
+      lastFocus = trigger || document.activeElement;
+      show(i);
+      el.hidden = false;
+      document.documentElement.classList.add('lb-open');
+      el.querySelector('.lb-close').focus();
+    }
+
+    function close() {
+      el.hidden = true;
+      img.removeAttribute('src');
+      document.documentElement.classList.remove('lb-open');
+      lastFocus?.focus();
+    }
+
+    return { open };
+  })();
+
+  function initGallery(root = document) {
+    root.querySelectorAll('.gallery').forEach(fig => {
+      const buttons = [...fig.querySelectorAll('.gallery-item')];
+      const items = buttons.map(btn => ({
+        src: btn.dataset.full,
+        alt: btn.querySelector('img').alt,
+        caption: btn.dataset.caption,
+      }));
+      buttons.forEach((btn, i) => btn.addEventListener('click', () => lightbox.open(items, i, btn)));
+
+      // Phone carousel: highlight the dot for the card in view
+      const track = fig.querySelector('.gallery-track');
+      const dots = [...fig.querySelectorAll('.gallery-dots span')];
+      if (dots.length) {
+        track.addEventListener('scroll', () => {
+          const step = buttons[1].offsetLeft - buttons[0].offsetLeft || 1;
+          const active = Math.min(dots.length - 1, Math.round(track.scrollLeft / step));
+          dots.forEach((d, i) => d.classList.toggle('is-active', i === active));
+        }, { passive: true });
+      }
+    });
+  }
+
   // ---------- Portable Text → HTML ----------
 
   function blocksToText(blocks = []) {
@@ -265,11 +409,13 @@ window.Blog = (function () {
         out += '<hr />';
       } else if (b._type === 'audio' && b.src) {
         out += audioPlayer(b);
+      } else if (b._type === 'gallery' && b.images?.length) {
+        out += gallery(b);
       }
     }
     closeList();
     return out;
   }
 
-  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, initAudio };
+  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, initAudio, initGallery };
 })();

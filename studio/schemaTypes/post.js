@@ -2,6 +2,7 @@ import {defineArrayMember, defineField, defineType} from 'sanity'
 import {DocumentTextIcon} from '@sanity/icons/DocumentText'
 import {BulbOutlineIcon} from '@sanity/icons/BulbOutline'
 import {PlayIcon} from '@sanity/icons/Play'
+import {ImagesIcon} from '@sanity/icons/Images'
 import {CategorySelect} from './CategorySelect'
 
 // Image upload with alt text, grouped under "Images" in the form
@@ -150,6 +151,51 @@ export default defineType({
             defineField({name: 'text', type: 'text', rows: 3, validation: (r) => r.required()}),
           ],
           preview: {select: {title: 'label', subtitle: 'text'}},
+        }),
+        defineArrayMember({
+          name: 'gallery',
+          title: 'Image gallery',
+          type: 'object',
+          icon: ImagesIcon,
+          fields: [
+            defineField({
+              name: 'images',
+              title: 'Images',
+              type: 'array',
+              description:
+                'Up to 10 images. Desktop shows up to 4 in a grid (with a "+ more" tile if there are more); phones show all of them in a swipeable carousel. Clicking an image opens the full-size viewer with every image. Upload at least 1600 px wide and set the hotspot so the subject stays in view.',
+              of: [
+                defineArrayMember({
+                  type: 'image',
+                  options: {hotspot: true},
+                  fields: [
+                    defineField({name: 'alt', title: 'Alt text', type: 'string', description: 'Describe the image for screen readers and Google.'}),
+                    defineField({name: 'caption', type: 'string', description: 'Optional, shown when the image is opened full size.'}),
+                  ],
+                }),
+              ],
+              options: {layout: 'grid'},
+              validation: (r) => r.required().min(1).max(10),
+            }),
+            defineField({
+              name: 'caption',
+              title: 'Gallery caption',
+              type: 'string',
+              description: 'Optional, shown under the gallery.',
+            }),
+          ],
+          preview: {
+            // Preview can't select a whole array, so check each of the 10 slots
+            select: {
+              ...Object.fromEntries(Array.from({length: 10}, (_, i) => [`i${i}`, `images.${i}.asset`])),
+              caption: 'caption',
+              media: 'images.0',
+            },
+            prepare: ({caption, media, ...slots}) => {
+              const n = Object.values(slots).filter(Boolean).length
+              return {title: `Image gallery · ${n} image${n === 1 ? '' : 's'}`, subtitle: caption, media}
+            },
+          },
         }),
         defineArrayMember({
           name: 'audio',
