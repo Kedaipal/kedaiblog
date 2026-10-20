@@ -185,9 +185,10 @@ export default defineType({
             }),
           ],
           preview: {
-            select: {images: 'images', caption: 'caption', media: 'images.0'},
-            prepare: ({images, caption, media}) => {
-              const n = images?.length || 0
+            // Preview can't select a whole array, so check each of the 4 slots
+            select: {i0: 'images.0.asset', i1: 'images.1.asset', i2: 'images.2.asset', i3: 'images.3.asset', caption: 'caption', media: 'images.0'},
+            prepare: ({i0, i1, i2, i3, caption, media}) => {
+              const n = [i0, i1, i2, i3].filter(Boolean).length
               return {title: `Image gallery · ${n} image${n === 1 ? '' : 's'}`, subtitle: caption, media}
             },
           },
