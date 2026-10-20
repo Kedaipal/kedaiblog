@@ -230,23 +230,26 @@ window.Blog = (function () {
     return `${Math.min(100, Math.max(0, x)).toFixed(1)}% ${Math.min(100, Math.max(0, y)).toFixed(1)}%`;
   }
 
-  // Desktop: grid laid out by image count (1–4). Phones: swipeable carousel of equal cards.
+  // Desktop: grid laid out by image count (1–4); with 5–10, the first 4 show and the
+  // 4th tile reads "+N". Phones: swipeable carousel of every image. All open in the lightbox.
   function gallery(b) {
-    const imgs = b.images.filter(img => img?.asset?.url).slice(0, 4);
+    const imgs = b.images.filter(img => img?.asset?.url).slice(0, 10);
     if (!imgs.length) return '';
     const n = imgs.length;
+    const more = n - 4;
     const items = imgs.map((img, i) => `
       <button class="gallery-item" type="button" data-index="${i}"
         data-full="${esc(imageUrl(img, 1800))}" data-caption="${esc(img.caption || '')}"
         aria-label="Open image ${i + 1} of ${n}${img.alt ? `: ${esc(img.alt)}` : ''}">
         <img src="${esc(imageUrl(img, 800))}" srcset="${esc(imageUrl(img, 800))} 1x, ${esc(imageUrl(img, 1600))} 2x"
           alt="${esc(img.alt || '')}" loading="lazy" decoding="async" style="object-position: ${focus(img)}" />
+        ${i === 3 && more > 0 ? `<span class="gallery-more" aria-hidden="true">+${more}</span>` : ''}
       </button>`).join('');
     const dots = n > 1
       ? `<div class="gallery-dots" aria-hidden="true">${imgs.map((_, i) => `<span${i === 0 ? ' class="is-active"' : ''}></span>`).join('')}</div>`
       : '';
     return `
-      <figure class="gallery" data-count="${n}">
+      <figure class="gallery" data-count="${Math.min(n, 4)}" data-total="${n}">
         <div class="gallery-track">${items}</div>
         ${dots}
         ${b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : ''}

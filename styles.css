@@ -621,6 +621,26 @@ h1, h2, h3, h4 {
   .gallery[data-count="4"] .gallery-item { aspect-ratio: 4 / 3; }
 }
 
+/* "+N" tile for galleries with more than 4 images (desktop only; phones show every image) */
+.gallery-more { display: none; }
+@media (min-width: 768px) {
+  .gallery-item:nth-child(n + 5) { display: none; }
+  .gallery-more {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgb(15 23 41 / 0.55);
+    color: #fff;
+    font-family: var(--font-display);
+    font-size: clamp(1.75rem, 4vw, 2.5rem);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    transition: background-color .2s;
+  }
+  .gallery-item:hover .gallery-more { background: rgb(15 23 41 / 0.45); }
+}
+
 /* Phones: one image at full width; 2+ images become a swipeable carousel of equal cards */
 @media (max-width: 767px) {
   .gallery-item { aspect-ratio: 4 / 3; }

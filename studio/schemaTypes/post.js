@@ -163,7 +163,7 @@ export default defineType({
               title: 'Images',
               type: 'array',
               description:
-                'Up to 4 images. Desktop shows them as a grid; phones show a swipeable carousel. Clicking an image opens it full size. Upload at least 1600 px wide and set the hotspot so the subject stays in view.',
+                'Up to 10 images. Desktop shows up to 4 in a grid (with a "+ more" tile if there are more); phones show all of them in a swipeable carousel. Clicking an image opens the full-size viewer with every image. Upload at least 1600 px wide and set the hotspot so the subject stays in view.',
               of: [
                 defineArrayMember({
                   type: 'image',
@@ -175,7 +175,7 @@ export default defineType({
                 }),
               ],
               options: {layout: 'grid'},
-              validation: (r) => r.required().min(1).max(4),
+              validation: (r) => r.required().min(1).max(10),
             }),
             defineField({
               name: 'caption',
@@ -185,10 +185,14 @@ export default defineType({
             }),
           ],
           preview: {
-            // Preview can't select a whole array, so check each of the 4 slots
-            select: {i0: 'images.0.asset', i1: 'images.1.asset', i2: 'images.2.asset', i3: 'images.3.asset', caption: 'caption', media: 'images.0'},
-            prepare: ({i0, i1, i2, i3, caption, media}) => {
-              const n = [i0, i1, i2, i3].filter(Boolean).length
+            // Preview can't select a whole array, so check each of the 10 slots
+            select: {
+              ...Object.fromEntries(Array.from({length: 10}, (_, i) => [`i${i}`, `images.${i}.asset`])),
+              caption: 'caption',
+              media: 'images.0',
+            },
+            prepare: ({caption, media, ...slots}) => {
+              const n = Object.values(slots).filter(Boolean).length
               return {title: `Image gallery · ${n} image${n === 1 ? '' : 's'}`, subtitle: caption, media}
             },
           },
