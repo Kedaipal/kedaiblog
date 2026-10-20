@@ -22,5 +22,11 @@
     // Built by `npm run build` (see build.mjs) — NOT the repo root, so the
     // Sanity Studio source never gets published to the public site.
     "directory": "./dist"
-  }
+  },
+  // Required by `npx wrangler preview`, which Workers Builds runs on every
+  // non-main branch (PR checks). Empty on purpose: this Worker has no vars or
+  // bindings, and `assets` + `compatibility_date` already apply to Previews
+  // from the top level. Previews serve on their own *.workers.dev URL and
+  // never touch `routes`, so blog.kedaipal.com only changes on a main deploy.
+  "previews": {}
 }
