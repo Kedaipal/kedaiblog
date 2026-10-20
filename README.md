@@ -39,7 +39,7 @@ In the Studio, open **Posts → +** and work down the form:
   - Only the card image is needed; the banners fall back to it when empty
 - **Summary, category, author, publish date**
 - **Feature on blog home:** puts the post in the large top slot (the newest ticked post wins)
-- **Body:** use the style menu for Heading, Subheading and Quote; the list buttons for bullets and numbers; and the **+** button to insert an **Image**, **Audio** (MP3/M4A, with an optional caption or transcript), **Tip box** or **Divider**
+- **Body:** use the style menu for Heading, Subheading and Quote; the list buttons for bullets and numbers; and the **+** button to insert an **Image**, **Image gallery** (up to 4 images: a grid on desktop, a swipeable carousel on phones, and each opens full size when clicked), **Audio** (MP3/M4A, with an optional caption or transcript), **Tip box** or **Divider**
 - **Cover when there is no image** (collapsed): the text and colour of the branded block used when no cover is uploaded
 
 Click **Publish**. Drafts never appear on the site. New posts show within about a minute.

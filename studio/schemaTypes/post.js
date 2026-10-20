@@ -2,6 +2,7 @@ import {defineArrayMember, defineField, defineType} from 'sanity'
 import {DocumentTextIcon} from '@sanity/icons/DocumentText'
 import {BulbOutlineIcon} from '@sanity/icons/BulbOutline'
 import {PlayIcon} from '@sanity/icons/Play'
+import {ImagesIcon} from '@sanity/icons/Images'
 import {CategorySelect} from './CategorySelect'
 
 // Image upload with alt text, grouped under "Images" in the form
@@ -150,6 +151,46 @@ export default defineType({
             defineField({name: 'text', type: 'text', rows: 3, validation: (r) => r.required()}),
           ],
           preview: {select: {title: 'label', subtitle: 'text'}},
+        }),
+        defineArrayMember({
+          name: 'gallery',
+          title: 'Image gallery',
+          type: 'object',
+          icon: ImagesIcon,
+          fields: [
+            defineField({
+              name: 'images',
+              title: 'Images',
+              type: 'array',
+              description:
+                'Up to 4 images. Desktop shows them as a grid; phones show a swipeable carousel. Clicking an image opens it full size. Upload at least 1600 px wide and set the hotspot so the subject stays in view.',
+              of: [
+                defineArrayMember({
+                  type: 'image',
+                  options: {hotspot: true},
+                  fields: [
+                    defineField({name: 'alt', title: 'Alt text', type: 'string', description: 'Describe the image for screen readers and Google.'}),
+                    defineField({name: 'caption', type: 'string', description: 'Optional, shown when the image is opened full size.'}),
+                  ],
+                }),
+              ],
+              options: {layout: 'grid'},
+              validation: (r) => r.required().min(1).max(4),
+            }),
+            defineField({
+              name: 'caption',
+              title: 'Gallery caption',
+              type: 'string',
+              description: 'Optional, shown under the gallery.',
+            }),
+          ],
+          preview: {
+            select: {images: 'images', caption: 'caption', media: 'images.0'},
+            prepare: ({images, caption, media}) => {
+              const n = images?.length || 0
+              return {title: `Image gallery · ${n} image${n === 1 ? '' : 's'}`, subtitle: caption, media}
+            },
+          },
         }),
         defineArrayMember({
           name: 'audio',
