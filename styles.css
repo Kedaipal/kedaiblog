@@ -393,7 +393,11 @@ h1, h2, h3, h4 {
 }
 .article-head .lede { font-size: 1.1875rem; color: var(--muted-foreground); margin: 1.25rem 0 0; }
 .article-cover { max-width: 56rem; margin-inline: auto; }
-.article-cover .cover { aspect-ratio: 21 / 9; }
+.article-cover .cover {
+  aspect-ratio: 21 / 9;
+  /* Faint navy-tinted shadow to lift the banner off the page */
+  box-shadow: 0 1px 2px rgb(15 23 41 / 0.04), 0 10px 30px -8px rgb(15 23 41 / 0.14);
+}
 /* Phones: same 16:10 shape as the cards, so the banner isn't a thin strip */
 @media (max-width: 767px) {
   /* Full-bleed: cancel the container's side padding and square the corners */
@@ -565,3 +569,182 @@ h1, h2, h3, h4 {
   color: var(--green-deep);
 }
 .audio-transcript p { margin: 0.5rem 0 0; }
+
+/* ---------- Image gallery (article body) ---------- */
+.prose .gallery { margin-inline: 0; }
+.gallery-track { display: grid; gap: 0.75rem; }
+.gallery-item {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--muted);
+  cursor: zoom-in;
+}
+.prose .gallery-item img {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  object-fit: cover;
+  transition: transform .4s ease;
+}
+.prose .gallery-item:hover img { transform: scale(1.03); }
+.prose .gallery figcaption {
+  margin-top: 0.625rem;
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+.gallery-dots { display: none; }
+
+/* Desktop & tablet: grid by image count, slightly wider than the text column */
+@media (min-width: 768px) {
+  .prose .gallery {
+    width: min(56rem, calc(100vw - 4rem));
+    margin-left: 50%;
+    transform: translateX(-50%);
+  }
+  .gallery[data-count="1"] .gallery-item { aspect-ratio: 16 / 9; }
+  .gallery[data-count="2"] .gallery-track { grid-template-columns: 1fr 1fr; }
+  .gallery[data-count="2"] .gallery-item { aspect-ratio: 4 / 3; }
+  /* 3: one large image on the left, two stacked on the right */
+  .gallery[data-count="3"] .gallery-track {
+    grid-template-columns: 2fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    aspect-ratio: 16 / 9;
+  }
+  .gallery[data-count="3"] .gallery-item:first-child { grid-row: span 2; }
+  .gallery[data-count="4"] .gallery-track { grid-template-columns: 1fr 1fr; }
+  .gallery[data-count="4"] .gallery-item { aspect-ratio: 4 / 3; }
+}
+
+/* "+N" tile for galleries with more than 4 images (desktop only; phones show every image) */
+.gallery-more { display: none; }
+@media (min-width: 768px) {
+  .gallery-item:nth-child(n + 5) { display: none; }
+  .gallery-more {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgb(15 23 41 / 0.55);
+    color: #fff;
+    font-family: var(--font-display);
+    font-size: clamp(1.75rem, 4vw, 2.5rem);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    transition: background-color .2s;
+  }
+  .gallery-item:hover .gallery-more { background: rgb(15 23 41 / 0.45); }
+}
+
+/* Phones: one image at full width; 2+ images become a swipeable carousel of equal cards */
+@media (max-width: 767px) {
+  .gallery-item { aspect-ratio: 4 / 3; }
+  .gallery:not([data-count="1"]) .gallery-track {
+    display: flex;
+    gap: 0.75rem;
+    margin-inline: -1.25rem;
+    padding-inline: 1.25rem;
+    scroll-padding-inline: 1.25rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .gallery:not([data-count="1"]) .gallery-track::-webkit-scrollbar { display: none; }
+  .gallery:not([data-count="1"]) .gallery-item {
+    flex: 0 0 85%;
+    scroll-snap-align: start;
+  }
+  .prose .gallery-item:hover img { transform: none; }
+  .gallery-dots {
+    display: flex;
+    justify-content: center;
+    gap: 0.375rem;
+    margin-top: 0.75rem;
+  }
+  .gallery-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--border);
+    transition: width .2s, background-color .2s;
+  }
+  .gallery-dots span.is-active { width: 18px; background: var(--green); }
+}
+
+/* ---------- Lightbox (full-size image pop-up) ---------- */
+html.lb-open { overflow: hidden; }
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 1rem;
+  padding: max(3.5rem, env(safe-area-inset-top)) 1rem max(3.5rem, env(safe-area-inset-bottom));
+  background: rgb(15 23 41 / 0.97);
+  animation: lb-fade .2s ease;
+}
+@keyframes lb-fade { from { opacity: 0; } }
+.lb-figure {
+  grid-column: 2;
+  margin: 0;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.lb-img {
+  max-width: 100%;
+  max-height: calc(100% - 2.5rem);
+  object-fit: contain;
+  border-radius: var(--radius);
+}
+.lb-caption {
+  margin-top: 0.875rem;
+  font-size: 0.9375rem;
+  color: rgb(248 250 252 / 0.85);
+  text-align: center;
+}
+.lb-btn {
+  width: 2.75rem;
+  height: 2.75rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.08);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color .2s;
+}
+.lb-btn:hover { background: rgb(255 255 255 / 0.18); }
+.lb-btn svg { width: 1.25rem; height: 1.25rem; }
+.lb-prev { grid-column: 1; }
+.lb-next { grid-column: 3; }
+.lb-close { position: absolute; top: max(0.75rem, env(safe-area-inset-top)); right: 0.75rem; }
+.lb-count {
+  position: absolute;
+  top: max(1.5rem, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: rgb(248 250 252 / 0.7);
+}
+/* Phones: arrows float over the image; swipe also works */
+@media (max-width: 767px) {
+  .lightbox { grid-template-columns: 1fr; padding-inline: 0.5rem; }
+  .lb-figure { grid-column: 1; grid-row: 1; }
+  .lb-prev, .lb-next { grid-row: 1; z-index: 1; align-self: center; }
+  .lb-prev { grid-column: 1; justify-self: start; }
+  .lb-next { grid-column: 1; justify-self: end; }
+}
