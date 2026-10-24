@@ -3,7 +3,9 @@ import {DocumentTextIcon} from '@sanity/icons/DocumentText'
 import {BulbOutlineIcon} from '@sanity/icons/BulbOutline'
 import {PlayIcon} from '@sanity/icons/Play'
 import {ImagesIcon} from '@sanity/icons/Images'
+import {VideoIcon} from '@sanity/icons/Video'
 import {CategorySelect} from './CategorySelect'
+import {BAD_LINK_MESSAGE, VideoLinkInput, parseVideoLink, videoPreview} from './VideoLinkInput'
 
 // Image upload with alt text, grouped under "Images" in the form
 const imageField = ({name, title, description}) =>
@@ -228,6 +230,58 @@ export default defineType({
           preview: {
             select: {title: 'title', filename: 'file.asset.originalFilename'},
             prepare: ({title, filename}) => ({title: title || 'Audio', subtitle: filename, media: PlayIcon}),
+          },
+        }),
+        defineArrayMember({
+          name: 'video',
+          title: 'Video',
+          type: 'object',
+          icon: VideoIcon,
+          // One input for the whole block: shows what the link is (clip or Stream), a
+          // thumbnail, and fills the hidden `aspect` field. See VideoLinkInput.jsx.
+          components: {input: VideoLinkInput},
+          fields: [
+            defineField({
+              name: 'link',
+              title: 'Video link',
+              type: 'string',
+              description: 'Paste the link from upload.kedaipal.com (clips and long videos both).',
+              validation: (r) =>
+                r.required().custom((link) => (!link || parseVideoLink(link) ? true : BAD_LINK_MESSAGE)),
+            }),
+            // "W/H", e.g. "16/9" — written by VideoLinkInput from the clip's own size, so the
+            // page can reserve the right box before the video loads. Stream is always 16/9.
+            defineField({name: 'aspect', type: 'string', hidden: true}),
+            defineField({
+              name: 'poster',
+              title: 'Poster',
+              type: 'image',
+              description: 'Only if you want a different frame than the automatic one.',
+              options: {hotspot: true},
+              fields: [
+                defineField({
+                  name: 'alt',
+                  title: 'Alt text',
+                  type: 'string',
+                  description: 'Describe the frame for screen readers.',
+                }),
+              ],
+            }),
+            defineField({
+              name: 'title',
+              type: 'string',
+              description: 'Optional, e.g. "Watch: Sue on starting her kitchen". Shown in bold under the video.',
+            }),
+            defineField({
+              name: 'caption',
+              type: 'text',
+              rows: 3,
+              description: 'Optional, shown under the video.',
+            }),
+          ],
+          preview: {
+            select: {title: 'title', link: 'link', poster: 'poster'},
+            prepare: videoPreview,
           },
         }),
         defineArrayMember({
