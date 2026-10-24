@@ -52,7 +52,7 @@ window.Blog = (function () {
           ${CARD},
           articleImage${IMAGE},
           articleImageMobile${IMAGE},
-          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}, _type == "gallery" => {caption, "images": images[]${IMAGE.slice(0, -1)}, caption}}}
+          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}, _type == "gallery" => {caption, "images": images[]${IMAGE.slice(0, -1)}, caption}}, _type == "video" => {link, aspect, title, caption, "poster": poster.asset->url, "posterAlt": poster.alt, "posterDims": poster.asset->metadata.dimensions}}
         },
         "others": *[_type == "post" && slug.current != $slug && publishedAt <= now()] | order(publishedAt desc)[0...12]{${CARD}}
       }`, { slug });
@@ -363,6 +363,89 @@ window.Blog = (function () {
     });
   }
 
+  // ---------- Video (clip on R2, or Cloudflare Stream) ----------
+
+  // The ONLY two link shapes a Video block accepts — what upload.kedaipal.com hands
+  // the writer. The Studio input (studio/schemaTypes/VideoLinkInput.jsx) copies
+  // these two regexes VERBATIM so the Studio refuses exactly what the site skips;
+  // change them in both places together.
+  //   Clip:   https://media.kedaipal.com/videos/<folder>/<name>.mp4   (folder is yyyy-mm; _test for smoke files)
+  //   Stream: https://customer-<code>.cloudflarestream.com/<uid>/iframe, …/<uid>/watch, or a bare 32-hex uid.
+  //           The customer code is captured only so the Studio can preview a thumbnail;
+  //           the site rebuilds the player URL from the uid + STREAM_CUSTOMER_CODE.
+  const VIDEO_FILE_RE = /^https:\/\/media\.kedaipal\.com\/videos\/([A-Za-z0-9_-]+)\/([A-Za-z0-9][A-Za-z0-9._-]*\.mp4)$/;
+  const VIDEO_STREAM_RE = /^(?:https:\/\/(customer-[a-z0-9]+)\.cloudflarestream\.com\/([0-9a-f]{32})\/(?:iframe|watch)\/?(?:\?[^\s#]*)?|([0-9a-f]{32}))$/;
+
+  const streamHost = () => (window.STREAM_CUSTOMER_CODE ? `https://customer-${window.STREAM_CUSTOMER_CODE}.cloudflarestream.com` : '');
+
+  // → {kind: 'file', src, poster} | {kind: 'stream', uid, src, poster} | null.
+  // For Stream, src/poster are null until STREAM_CUSTOMER_CODE is set in js/config.js.
+  function parseVideoLink(link) {
+    const s = String(link ?? '').trim();
+    let m = VIDEO_FILE_RE.exec(s);
+    if (m) return { kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2] };
+    m = VIDEO_STREAM_RE.exec(s);
+    if (m) {
+      const uid = m[2] || m[3];
+      const host = streamHost();
+      return {
+        kind: 'stream',
+        uid,
+        src: host ? `${host}/${uid}/iframe?preload=metadata` : null,
+        poster: host ? `${host}/${uid}/thumbnails/thumbnail.jpg` : null,
+      };
+    }
+    return null;
+  }
+
+  // "W/H" string (from the Studio) or {width, height} (poster dims) → "W / H" for CSS, else null
+  function aspectCss(value) {
+    let w, h;
+    if (value && typeof value === 'object') ({ width: w, height: h } = value);
+    else {
+      const m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(String(value ?? ''));
+      if (m) [, w, h] = m;
+    }
+    w = Number(w); h = Number(h);
+    return w > 0 && h > 0 ? `${w} / ${h}` : null;
+  }
+
+  // The box is sized by --aspect before any media loads, so the article never jumps.
+  // Clips play in a plain <video>; long videos in Cloudflare Stream's adaptive iframe.
+  // Deliberately no autoplay, muted or loop — it's an article, not a feed.
+  function videoPlayer(b) {
+    const v = parseVideoLink(b.link);
+    if (!v) return '';
+    if (v.kind === 'stream' && !v.src) {
+      console.warn('Video block skipped: set STREAM_CUSTOMER_CODE in js/config.js to play Cloudflare Stream videos.');
+      return '';
+    }
+    const aspect = aspectCss(b.posterDims) || aspectCss(b.aspect) || '16 / 9';
+    const poster = b.poster ? imageUrl({ asset: { url: b.poster } }, 1344) : v.poster;
+    const title = b.title?.trim();
+    const caption = b.caption?.trim();
+    let player;
+    if (v.kind === 'file') {
+      player = `<video controls playsinline preload="metadata" src="${esc(v.src)}" poster="${esc(poster)}"${title ? ` title="${esc(title)}"` : ''}></video>`;
+    } else {
+      const src = b.poster ? `${v.src}&poster=${encodeURIComponent(poster)}` : v.src;
+      player = `<iframe src="${esc(src)}" title="${esc(title || 'Video')}" loading="lazy"`
+        + ` allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+    }
+    const figcaption = title || caption
+      ? `<figcaption>${title ? `<strong>${esc(title)}</strong>` : ''}${title && caption ? ' ' : ''}${caption ? esc(caption).replace(/\n/g, '<br />') : ''}</figcaption>`
+      : '';
+    // Portrait clips are capped by height on wide screens (see styles.css) instead of
+    // filling the column as a tall black tower
+    const [aw, ah] = aspect.split(' / ').map(Number);
+    const portrait = ah > aw ? ' video--portrait' : '';
+    return `
+      <figure class="video video--${v.kind}${portrait}" style="--aspect: ${aspect}">
+        <div class="video-frame">${player}</div>
+        ${figcaption}
+      </figure>`;
+  }
+
   // ---------- Portable Text → HTML ----------
 
   function blocksToText(blocks = []) {
@@ -411,11 +494,13 @@ window.Blog = (function () {
         out += audioPlayer(b);
       } else if (b._type === 'gallery' && b.images?.length) {
         out += gallery(b);
+      } else if (b._type === 'video') {
+        out += videoPlayer(b); // unknown link shapes render nothing
       }
     }
     closeList();
     return out;
   }
 
-  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, initAudio, initGallery };
+  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, parseVideoLink, videoPlayer, initAudio, initGallery };
 })();
