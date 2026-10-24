@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Upload a video — Kedaipal</title>
+  <meta name="robots" content="noindex" />
+  <meta name="theme-color" content="#0F172A" />
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@500;600;700;800&family=Red+Hat+Text:wght@400;500;600&family=Red+Hat+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/upload.css" />
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/" aria-label="Kedaipal uploads"><img src="/logo.svg" alt="Kedaipal" /><span class="brand-sub">Uploads</span></a>
+    <nav class="top-nav" aria-label="Pages">
+      <a href="/" aria-current="page">Upload</a>
+      <a href="/recent">Recent</a>
+    </nav>
+    <span class="who" id="who" aria-live="polite"></span>
+  </header>
+
+  <main class="page">
+    <section class="section-head">
+      <span class="eyebrow">Blog video</span>
+      <h1>Drop a video, get a link.</h1>
+      <p class="lede" id="rule">Clips up to 5 minutes are stored on our own domain for free. Longer videos go to Cloudflare Stream, which plays smoothly on any connection and is billed per minute watched.</p>
+    </section>
+
+    <!-- Idle: the drop zone. Hidden once a file is chosen; the panel takes over. -->
+    <section class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a video to upload" aria-describedby="rule">
+      <div class="drop-icon" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1.5"/></svg>
+      </div>
+      <p class="drop-title">Drop a video here</p>
+      <p class="drop-sub">or <span class="link">choose a file</span> — MP4 for clips; MP4 or MOV for long videos</p>
+      <input type="file" id="file" accept="video/*,.mp4,.m4v,.mov" hidden />
+    </section>
+
+    <!-- Everything after a file is chosen renders in here (see app.js). -->
+    <section class="panel" id="panel" hidden aria-live="polite"></section>
+
+    <p class="foot-note">The page checks that the file will actually play, grabs a poster frame and never overwrites an earlier upload. <a href="/recent">Recent uploads</a> keeps every link.</p>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden>Link copied</div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

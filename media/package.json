@@ -1,0 +1,18 @@
+{
+  "name": "kedaipal-upload",
+  "private": true,
+  "version": "1.0.0",
+  "description": "upload.kedaipal.com — Access-protected video upload page that routes clips to R2 and long videos to Cloudflare Stream",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --var ACCESS_DEV_BYPASS:1 --var ACCESS_AUD: --var PUBLIC_MEDIA_BASE:http://localhost:8787/media",
+    "test": "node --test test/",
+    "fixtures": "node scripts/make-fixtures.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.80.0"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}
