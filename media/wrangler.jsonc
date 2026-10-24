@@ -1,0 +1,53 @@
+{
+  // upload.kedaipal.com — the blog's video upload page. A SECOND Worker in this
+  // repo, separate from the public site (../wrangler.jsonc). It lives here
+  // because the blog is the only consumer of the links it hands out.
+  //
+  // Deploys via Cloudflare Workers Builds (a second Workers project importing
+  // this repo with root directory `media/`, build `npm ci`, deploy
+  // `npx wrangler deploy`). Never run `wrangler deploy` from a laptop.
+  "name": "kedaipal-upload",
+  "account_id": "8eb311132741dadfcd1fef79b8b7c1df",
+  "main": "src/worker.js",
+  // Same date as the other two Kedaipal Workers, and the newest the pinned
+  // Wrangler (4.80.0) accepts.
+  "compatibility_date": "2025-09-02",
+  // No *.workers.dev address: the page must only be reachable through the
+  // hostname Cloudflare Access protects. (The Worker also verifies the Access
+  // JWT itself, so a stray route would get a 401, not the page.)
+  "workers_dev": false,
+  "routes": [{"pattern": "upload.kedaipal.com", "custom_domain": true}],
+  // The page, its CSS/JS and the tiny tus client, served by the Worker itself.
+  // `run_worker_first` sends EVERY request through src/worker.js, so the Access
+  // check runs before a single static byte is served.
+  "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true},
+  // Clips (≤ 5 min) land here; media.kedaipal.com is this bucket's public
+  // custom domain (set up in the dashboard — ClickUp subtask 1 §A).
+  "r2_buckets": [{"binding": "MEDIA", "bucket_name": "kedaipal-media"}],
+  // Plain-text configuration. Declared HERE rather than in the dashboard
+  // because `wrangler deploy` replaces dashboard vars with the ones in this
+  // file — a value typed into the dashboard would vanish on the next build.
+  // Fill the three empty ones from ClickUp subtask 1 (§B.3, §C.1, §C.4) in a
+  // normal PR before the first deploy; until then the Worker answers 503.
+  "vars": {
+    // "<team>" in https://<team>.cloudflareaccess.com — Zero Trust → Settings.
+    "ACCESS_TEAM_DOMAIN": "",
+    // The Access application's AUD tag — Access → Applications → upload.kedaipal.com → Overview.
+    "ACCESS_AUD": "",
+    // Same account as above; the Stream API URL needs it.
+    "CF_ACCOUNT_ID": "8eb311132741dadfcd1fef79b8b7c1df",
+    // "xxxxxxxx" in https://customer-xxxxxxxx.cloudflarestream.com — from any
+    // Stream video's embed snippet. Public value; it is in every Stream link.
+    "STREAM_CUSTOMER_CODE": "",
+    // Where clips are served from. `npm run dev` overrides this to the local
+    // Worker (http://localhost:8787/media) so links work without the real bucket.
+    "PUBLIC_MEDIA_BASE": "https://media.kedaipal.com"
+  },
+  // SECRET, never in this file:
+  //   STREAM_API_TOKEN — a token with only "Stream : Edit" on this account.
+  //   Set it on the deployed Worker (Workers → kedaipal-upload → Settings →
+  //   Variables and Secrets) or with `npx wrangler secret put STREAM_API_TOKEN`
+  //   run from this folder. For `wrangler dev`, put it in a local `.dev.vars`
+  //   file (gitignored).
+  "observability": {"enabled": true}
+}
