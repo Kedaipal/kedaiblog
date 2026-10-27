@@ -1,5 +1,5 @@
 import {Fragment, useEffect, useRef, useState} from 'react'
-import {Badge, Box, Card, Flex, Stack, Text} from '@sanity/ui'
+import {Badge, Box, Card, Flex, Stack} from '@sanity/ui'
 import {MemberField, set, unset} from 'sanity'
 import {VideoIcon} from '@sanity/icons/Video'
 
@@ -99,14 +99,23 @@ function Thumb({src, kind}) {
           style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover'}}
         />
       ) : (
-        <Stack space={2} style={{textAlign: 'center', padding: '0 .75rem'}}>
-          <Text size={3} style={{color: 'inherit'}}>
-            <VideoIcon />
-          </Text>
-          <Text size={0} style={{color: 'inherit'}}>
-            {src ? (kind === 'youtube' ? 'Thumbnail unavailable' : 'Poster not ready yet') : 'No preview'}
-          </Text>
-        </Stack>
+        // Plain elements, not Sanity UI Text: Text trims its line box with negative
+        // margins, which overlapped the icon inside this centred box.
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 6,
+            padding: '0 .75rem',
+            textAlign: 'center',
+            fontSize: 12,
+            lineHeight: '16px',
+          }}
+        >
+          <VideoIcon style={{fontSize: 28}} />
+          <span>{src ? (kind === 'youtube' ? 'Thumbnail unavailable' : 'Poster not ready yet') : 'No preview'}</span>
+        </div>
       )}
     </Box>
   )
@@ -127,21 +136,29 @@ function LinkStatus({parsed, probe}) {
           : 'Couldn’t read the clip yet (is the link live?). The page will use a 16:9 box until it can.'
   return (
     <Card padding={3} radius={2} border tone="transparent">
-      <Flex gap={3} align="flex-start">
+      {/* The text column drops below the thumbnail when the form is narrow. The text is
+          plain elements with the card's colour variables, not Sanity UI Text/Stack: in
+          this Studio, Text's trimmed line boxes drew each line on top of the next. */}
+      <Flex gap={3} align="flex-start" wrap="wrap">
         <Thumb src={parsed.poster} kind={parsed.kind} />
-        <Stack space={3} style={{flex: 1, minWidth: 0, paddingTop: '.125rem'}}>
-          <Flex gap={2} align="center" wrap="wrap">
-            <Badge tone={kind.tone} fontSize={1} padding={2}>
-              {kind.label}
-            </Badge>
-            <Text size={1} muted>
-              {kind.detail}
-            </Text>
-          </Flex>
-          <Text size={1} muted style={{overflowWrap: 'anywhere'}}>
-            {detail}
-          </Text>
-        </Stack>
+        <div
+          style={{
+            flex: '1 1 12rem',
+            minWidth: '12rem',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            gap: 8,
+            fontSize: 13,
+            lineHeight: '19px',
+          }}
+        >
+          <Badge tone={kind.tone} fontSize={1} padding={2}>
+            {kind.label}
+          </Badge>
+          <div style={{color: 'var(--card-fg-color)', fontWeight: 500}}>{kind.detail}</div>
+          <div style={{color: 'var(--card-muted-fg-color)', overflowWrap: 'anywhere'}}>{detail}</div>
+        </div>
       </Flex>
     </Card>
   )
