@@ -1,13 +1,12 @@
 {
-  "name": "kedaipal-upload",
+  "name": "kedaipal-admin-videos",
   "private": true,
   "version": "1.0.0",
-  "description": "upload.kedaipal.com — Access-protected video upload page that routes clips to R2 and long videos to Cloudflare Stream",
+  "description": "admin.kedaipal.com/videos — upload a blog video to Cloudflare Stream behind the Kedaipal app login",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --var ACCESS_DEV_BYPASS:1 --var ACCESS_AUD: --var PUBLIC_MEDIA_BASE:http://localhost:8787/media",
-    "test": "node --test test/",
-    "fixtures": "node scripts/make-fixtures.mjs"
+    "dev": "wrangler dev --port 8787 --var CLERK_PUBLISHABLE_KEY:pk_test_bGlrZWQtaW1wYWxhLTguY2xlcmsuYWNjb3VudHMuZGV2JA --var CLERK_ISSUER:https://liked-impala-8.clerk.accounts.dev --var CLERK_AUTHORIZED_PARTIES:http://localhost:8787 --var CONVEX_URL:https://qualified-chihuahua-441.convex.cloud --var APP_URL:http://localhost:3000/app",
+    "test": "node --test \"test/*.test.mjs\""
   },
   "devDependencies": {
     "wrangler": "4.80.0"

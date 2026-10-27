@@ -1,53 +1,56 @@
 {
-  // upload.kedaipal.com — the blog's video upload page. A SECOND Worker in this
-  // repo, separate from the public site (../wrangler.jsonc). It lives here
-  // because the blog is the only consumer of the links it hands out.
+  // admin.kedaipal.com/videos — upload a video for the blog, get one Cloudflare
+  // Stream link for the Studio's Video block. A SECOND Worker in this repo,
+  // separate from the public site (../wrangler.jsonc).
   //
-  // Deploys via Cloudflare Workers Builds (a second Workers project importing
+  // Deploys via Cloudflare Workers Builds (its own Workers project importing
   // this repo with root directory `media/`, build `npm ci`, deploy
-  // `npx wrangler deploy`). Never run `wrangler deploy` from a laptop.
-  "name": "kedaipal-upload",
+  // `npx wrangler deploy`, preview builds OFF). Never `wrangler deploy` from a laptop.
+  "name": "kedaipal-admin-videos",
   "account_id": "8eb311132741dadfcd1fef79b8b7c1df",
   "main": "src/worker.js",
-  // Same date as the other two Kedaipal Workers, and the newest the pinned
+  // Same date as the other Kedaipal Workers, and the newest the pinned
   // Wrangler (4.80.0) accepts.
   "compatibility_date": "2025-09-02",
-  // No *.workers.dev address: the page must only be reachable through the
-  // hostname Cloudflare Access protects. (The Worker also verifies the Access
-  // JWT itself, so a stray route would get a 401, not the page.)
   "workers_dev": false,
-  "routes": [{"pattern": "upload.kedaipal.com", "custom_domain": true}],
-  // The page, its CSS/JS and the tiny tus client, served by the Worker itself.
-  // `run_worker_first` sends EVERY request through src/worker.js, so the Access
-  // check runs before a single static byte is served.
-  "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true},
-  // Clips (≤ 5 min) land here; media.kedaipal.com is this bucket's public
-  // custom domain (set up in the dashboard — ClickUp subtask 1 §A).
-  "r2_buckets": [{"binding": "MEDIA", "bucket_name": "kedaipal-media"}],
-  // Plain-text configuration. Declared HERE rather than in the dashboard
-  // because `wrangler deploy` replaces dashboard vars with the ones in this
-  // file — a value typed into the dashboard would vanish on the next build.
-  // Fill the three empty ones from ClickUp subtask 1 (§B.3, §C.1, §C.4) in a
-  // normal PR before the first deploy; until then the Worker answers 503.
+  // This page is admin.kedaipal.com's first tenant, so for now the Worker owns
+  // the whole host ("/" redirects to /videos). When the admin app is built it
+  // takes the host and this becomes a route: {"pattern": "admin.kedaipal.com/videos*",
+  // "zone_name": "kedaipal.com"}. Everything here already lives under /videos.
+  "routes": [{"pattern": "admin.kedaipal.com", "custom_domain": true}],
+  // The page shell, CSS and JS. Served by src/worker.js (run_worker_first), so
+  // the Worker decides the paths; html_handling "none" keeps /videos from being
+  // redirected to /videos/.
+  "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true, "html_handling": "none"},
+  // PRODUCTION values. `npm run dev` overrides them with the Clerk DEV instance
+  // and the DEV Convex deployment (see package.json), so local work never
+  // touches production. Declared here rather than in the dashboard because
+  // `wrangler deploy` replaces dashboard vars with the ones in this file.
   "vars": {
-    // "<team>" in https://<team>.cloudflareaccess.com — Zero Trust → Settings.
-    "ACCESS_TEAM_DOMAIN": "",
-    // The Access application's AUD tag — Access → Applications → upload.kedaipal.com → Overview.
-    "ACCESS_AUD": "",
+    // The Kedaipal app's production Clerk instance (Frontend API clerk.kedaipal.com).
+    // Publishable keys are public by design.
+    "CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsua2VkYWlwYWwuY29tJA",
+    // `iss` of every Clerk token; also where the JWKS lives (/.well-known/jwks.json).
+    "CLERK_ISSUER": "https://clerk.kedaipal.com",
+    // Allowed `azp` (the origin a token was minted for). Comma-separated.
+    "CLERK_AUTHORIZED_PARTIES": "https://admin.kedaipal.com",
+    // The main app's production Convex deployment. Holds the one access list:
+    // query `adminAccess:mine` must return the "videos" area.
+    "CONVEX_URL": "https://peaceful-falcon-152.convex.cloud",
+    // Where "Go to the Kedaipal app" points from the no-access page.
+    "APP_URL": "https://kedaipal.com/app",
     // Same account as above; the Stream API URL needs it.
     "CF_ACCOUNT_ID": "8eb311132741dadfcd1fef79b8b7c1df",
     // "xxxxxxxx" in https://customer-xxxxxxxx.cloudflarestream.com — from any
-    // Stream video's embed snippet. Public value; it is in every Stream link.
+    // Stream video's embed snippet once Stream is enabled. Public value.
     "STREAM_CUSTOMER_CODE": "",
-    // Where clips are served from. `npm run dev` overrides this to the local
-    // Worker (http://localhost:8787/media) so links work without the real bucket.
-    "PUBLIC_MEDIA_BASE": "https://media.kedaipal.com"
+    // Every uploaded video plays only on these hosts (Stream "allowed origins").
+    "STREAM_ALLOWED_ORIGINS": "blog.kedaipal.com"
   },
   // SECRET, never in this file:
-  //   STREAM_API_TOKEN — a token with only "Stream : Edit" on this account.
-  //   Set it on the deployed Worker (Workers → kedaipal-upload → Settings →
-  //   Variables and Secrets) or with `npx wrangler secret put STREAM_API_TOKEN`
-  //   run from this folder. For `wrangler dev`, put it in a local `.dev.vars`
-  //   file (gitignored).
+  //   STREAM_API_TOKEN — a token with only Account → Stream → Edit.
+  //   Set on the deployed Worker (Workers → kedaipal-admin-videos → Settings →
+  //   Variables and Secrets). For `npm run dev`, put it in a local `.dev.vars`
+  //   (gitignored).
   "observability": {"enabled": true}
 }

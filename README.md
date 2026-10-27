@@ -14,7 +14,7 @@ A static blog (HTML/CSS/JS) styled like kedaipal.com. Posts are managed in Sanit
 | `js/sanity.js` | Fetches posts from Sanity and turns them into HTML |
 | `js/demo-data.js` | Sample posts. Shown only if `projectId` in `js/config.js` is empty; also used by `npm run seed` |
 | `studio/` | Sanity Studio, where posts are written |
-| `media/` | The `upload.kedaipal.com` Worker: writers drop a video, get one link for the Video block. Own `wrangler.jsonc` and README |
+| `media/` | The `admin.kedaipal.com/videos` Worker: writers sign in with their Kedaipal account, drop a video, get one Cloudflare Stream link for the Video block. Own `wrangler.jsonc` and README |
 
 ## Run locally
 
@@ -61,7 +61,7 @@ record — there is nothing to click in the dashboard to keep it working.
 | The website | this repo | push to `main` → Cloudflare Workers Builds |
 | The posts | Sanity project `cvycqoxz` | published in the Studio; live within ~a minute |
 | The Studio | `studio/` in this repo | `cd studio && npm run deploy` → <https://kedaipal-blog.sanity.studio> |
-| The upload page | `media/` in this repo | push to `main` → a second Workers Builds project (root `media/`) → <https://upload.kedaipal.com>, behind Cloudflare Access. See `media/README.md` |
+| The video upload page | `media/` in this repo | push to `main` → its own Workers Builds project (root `media/`) → <https://admin.kedaipal.com/videos>, behind the app's Clerk login. See `media/README.md` |
 
 `npm run build` copies **only** the public site into `dist/` — `studio/` and
 `media/` are never published. It is an allow-list; see the comment at the top of `build.mjs` before
