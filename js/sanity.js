@@ -393,7 +393,7 @@ window.Blog = (function () {
     if (m) return { kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2] };
     m = VIDEO_YOUTUBE_RE.exec(s);
     // embed/videoseries?list=… is a playlist, not an 11-character video id
-    if (m && m[1] !== 'videoseries') return { kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` };
+    if (m && m[1] !== 'videoseries') return { kind: 'youtube', id: m[1], short: /^https:\/\/(?:www\.|m\.)?youtube\.com\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` };
     m = VIDEO_STREAM_RE.exec(s);
     if (m) {
       const uid = m[2] || m[3];

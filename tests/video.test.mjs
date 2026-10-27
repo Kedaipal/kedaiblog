@@ -88,6 +88,13 @@ describe('parseVideoLink', () => {
     assert.deepEqual(plain(parseVideoLink(`https://www.youtube.com/shorts/${ID}`)), {kind: 'youtube', id: ID, short: true, poster: `https://i.ytimg.com/vi/${ID}/hqdefault.jpg`})
   })
 
+  test('YouTube: only a /shorts/ path makes a Short, not "/shorts/" later in the link', () => {
+    const joined = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1https://www.youtube.com/shorts/dQw4w9WgXcQ'
+    assert.equal(parseVideoLink(joined)?.short, false)
+    assert.equal(parseVideoLink('https://m.youtube.com/shorts/dQw4w9WgXcQ')?.short, true)
+    assert.equal(parseVideoLink('https://youtube.com/shorts/dQw4w9WgXcQ?feature=share')?.short, true)
+  })
+
   test('YouTube: lookalikes, other hosts and non-video pages are rejected', () => {
     for (const bad of [
       'http://www.youtube.com/watch?v=M7lc1UVf-VE',
@@ -276,9 +283,10 @@ describe('Studio input mirrors the site parser', () => {
     }
   })
   test('both parsers refuse the videoseries playlist embed the same way', () => {
-    const rule = "m[1] !== 'videoseries'"
-    assert.ok(SANITY_JS.includes(rule), 'js/sanity.js')
-    assert.ok(STUDIO_INPUT.includes(rule), 'VideoLinkInput.jsx')
+    for (const rule of ["m[1] !== 'videoseries'", "short: /^https:\\/\\/(?:www\\.|m\\.)?youtube\\.com\\/shorts\\//.test(s)"]) {
+      assert.ok(SANITY_JS.includes(rule), 'js/sanity.js: ' + rule)
+      assert.ok(STUDIO_INPUT.includes(rule), 'VideoLinkInput.jsx: ' + rule)
+    }
   })
 
   test('the Studio tells a playlist apart from any other refused link', () => {

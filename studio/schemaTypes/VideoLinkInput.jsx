@@ -44,7 +44,7 @@ export function parseVideoLink(link) {
   if (m) return {kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2]}
   m = VIDEO_YOUTUBE_RE.exec(s)
   // embed/videoseries?list=… is a playlist, not an 11-character video id
-  if (m && m[1] !== 'videoseries') return {kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg`}
+  if (m && m[1] !== 'videoseries') return {kind: 'youtube', id: m[1], short: /^https:\/\/(?:www\.|m\.)?youtube\.com\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg`}
   m = VIDEO_STREAM_RE.exec(s)
   if (m) {
     const uid = m[2] || m[3]
@@ -147,7 +147,7 @@ function LinkStatus({parsed, probe}) {
         ? 'Reading the clip’s size…'
         : probe.state === 'ok'
           ? `${probe.width} × ${probe.height} · ${probe.aspect.replace('/', ':')}${probe.duration ? ` · ${clock(probe.duration)}` : ''}`
-          : 'Couldn’t read the clip yet (is the link live?). The page will use a 16:9 box until it can.'
+          : 'Couldn’t read the clip yet (is the link live?). Until it can, the page keeps the size it last knew, or uses 16:9.'
   return (
     <Card padding={3} radius={2} border tone="transparent">
       {/* The text column drops below the thumbnail when the form is narrow. The text is
@@ -184,7 +184,7 @@ function LinkStatus({parsed, probe}) {
  * field. Fields render exactly as Sanity would, via MemberField.
  */
 export function VideoLinkInput(props) {
-  const {value, onChange, members} = props
+  const {value, onChange, members, readOnly} = props
   const link = value?.link
   const parsed = parseVideoLink(link)
   const [probe, setProbe] = useState({state: 'idle'})
@@ -194,9 +194,13 @@ export function VideoLinkInput(props) {
   // Fill the hidden `aspect` field so the page can reserve the right box.
   // Clip: read the real size from the file's metadata (a <video preload="metadata">
   // needs no CORS). YouTube: 16:9, or 9:16 for a Short. Stream: 16:9.
+  // Never while the document is read-only (it is while it loads, and in a published
+  // or release view): patching then throws "Attempted to patch a read-only document".
+  // The effect re-runs when the document becomes editable.
   const key = parsed ? `${parsed.kind}:${parsed.kind === 'file' ? parsed.src : idOf(parsed)}` : ''
   useEffect(() => {
     const write = (aspect) => {
+      if (readOnly) return
       if ((current.current?.aspect || null) !== aspect) onChange(aspect ? set(aspect, ['aspect']) : unset(['aspect']))
     }
     if (!parsed) {
@@ -221,8 +225,9 @@ export function VideoLinkInput(props) {
     }
     video.onerror = () => {
       if (!active) return
+      // Keep any stored aspect: a clip that can't be read right now (offline, slow
+      // network) must not wipe the box size a published post already relies on.
       setProbe({state: 'error'})
-      write(null)
     }
     video.src = parsed.src
     return () => {
@@ -231,7 +236,7 @@ export function VideoLinkInput(props) {
       video.load()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+  }, [key, readOnly])
 
   return (
     <Stack space={4}>
