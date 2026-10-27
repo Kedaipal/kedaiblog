@@ -4,8 +4,9 @@ import {MemberField, set, unset} from 'sanity'
 import {VideoIcon} from '@sanity/icons/Video'
 
 /*
- * The Video block: one "Video link" field that takes either link upload.kedaipal.com
- * hands out, and works out which player the site should use.
+ * The Video block: one "Video link" field that takes the link admin.kedaipal.com/videos
+ * hands out (Cloudflare Stream) and works out which player the site should use. The R2
+ * clip shape is dormant today but still accepted, so clips can move to R2 later.
  *
  * The two regexes below are copied VERBATIM from js/sanity.js (parseVideoLink), so the
  * Studio refuses exactly the links the site would skip. Change them in both files together.
@@ -16,7 +17,7 @@ const VIDEO_FILE_RE = /^https:\/\/media\.kedaipal\.com\/videos\/([A-Za-z0-9_-]+)
 const VIDEO_STREAM_RE = /^(?:https:\/\/(customer-[a-z0-9]+)\.cloudflarestream\.com\/([0-9a-f]{32})\/(?:iframe|watch)\/?(?:\?[^\s#]*)?|([0-9a-f]{32}))$/;
 
 export const BAD_LINK_MESSAGE =
-  "That's not a link from upload.kedaipal.com. Upload the video there first, then paste the link it gives you."
+  "That's not a link from admin.kedaipal.com/videos. Upload the video there first, then paste the link it gives you."
 
 // Studio-side twin of parseVideoLink in js/sanity.js. The Stream thumbnail here uses the
 // customer code from the pasted link — preview only; the site uses STREAM_CUSTOMER_CODE.
@@ -51,8 +52,8 @@ export function videoPreview({title, link, poster}) {
   const subtitle = v
     ? `${KIND[v.kind].label} · ${v.kind === 'file' ? v.name : v.uid}`
     : link
-      ? 'Not a link from upload.kedaipal.com'
-      : 'Paste a link from upload.kedaipal.com'
+      ? 'Not a link from admin.kedaipal.com/videos'
+      : 'Paste a link from admin.kedaipal.com/videos'
   const media = poster?.asset
     ? poster
     : v?.poster

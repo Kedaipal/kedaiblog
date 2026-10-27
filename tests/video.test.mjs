@@ -188,7 +188,7 @@ describe('Studio input mirrors the site parser', () => {
       assert.equal(pick(STUDIO_INPUT, name), pick(SANITY_JS, name), name)
     }
   })
-  test('the Studio message names upload.kedaipal.com', () => {
-    assert.match(STUDIO_INPUT, /That's not a link from upload\.kedaipal\.com\. Upload the video there first, then paste the link it gives you\./)
+  test('the Studio message names admin.kedaipal.com/videos', () => {
+    assert.match(STUDIO_INPUT, /That's not a link from admin\.kedaipal\.com\/videos\. Upload the video there first, then paste the link it gives you\./)
   })
 })

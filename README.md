@@ -40,7 +40,7 @@ In the Studio, open **Posts → +** and work down the form:
   - Only the card image is needed; the banners fall back to it when empty
 - **Summary, category, author, publish date**
 - **Feature on blog home:** puts the post in the large top slot (the newest ticked post wins)
-- **Body:** use the style menu for Heading, Subheading and Quote; the list buttons for bullets and numbers; and the **+** button to insert an **Image**, **Image gallery** (up to 10 images: a grid of up to 4 on desktop with a "+N" tile for the rest, a swipeable carousel of all images on phones, and each opens full size when clicked), **Audio** (MP3/M4A, with an optional caption or transcript), **Video** (paste the link from upload.kedaipal.com — see [Adding a video](#adding-a-video)), **Tip box** or **Divider**
+- **Body:** use the style menu for Heading, Subheading and Quote; the list buttons for bullets and numbers; and the **+** button to insert an **Image**, **Image gallery** (up to 10 images: a grid of up to 4 on desktop with a "+N" tile for the rest, a swipeable carousel of all images on phones, and each opens full size when clicked), **Audio** (MP3/M4A, with an optional caption or transcript), **Video** (paste the link from admin.kedaipal.com/videos — see [Adding a video](#adding-a-video)), **Tip box** or **Divider**
 - **Cover when there is no image** (collapsed): the text and colour of the branded block used when no cover is uploaded
 
 Click **Publish**. Drafts never appear on the site. New posts show within about a minute.
@@ -48,15 +48,18 @@ Categories (and their order in the filter bar) are edited under **Categories**.
 
 ### Adding a video
 
-Videos are not uploaded to Sanity (every play would count against its quota). Instead:
+Videos are not uploaded to Sanity (every play would count against its quota). They go to
+Cloudflare Stream, which plays each one at the best quality the reader's connection can
+take, so a video keeps playing on weak mobile data instead of stopping to buffer.
 
-1. Go to <https://upload.kedaipal.com> and sign in with the email code it sends you.
-2. Drag the video in. The page checks it will play, picks where it lives (short clips are
-   stored on `media.kedaipal.com`; long videos go to Cloudflare Stream, which adapts the
-   quality to the reader's connection), grabs a poster frame and gives you **one link**.
-3. In the post body, press **+ → Video** and paste that link. The Studio shows what it is
-   (**Clip** or **Stream**) and a thumbnail; anything that isn't a link from
-   upload.kedaipal.com is refused.
+1. Go to <https://admin.kedaipal.com/videos> and sign in with your Kedaipal account (the
+   same login as the Kedaipal app). Your account must be on the blog editors list; ask Zaki.
+2. Drag the video in. Any format a phone or camera records is fine. Wait until the page
+   says the video is ready (a long podcast can take several minutes), then copy the
+   **one link** it gives you.
+3. In the post body, press **+ → Video** and paste that link. The Studio shows
+   **Stream · adaptive** and a thumbnail; anything that isn't a link from
+   admin.kedaipal.com/videos is refused.
 4. Optional: a **Poster** image if you want a different frame than the automatic one, a
    **Title** (shown in bold under the video) and a **Caption**.
 
@@ -66,7 +69,12 @@ the old one is never overwritten.
 
 For the site to play Stream videos, `STREAM_CUSTOMER_CODE` in `js/config.js` must hold the
 account's Stream customer code (the `customer-xxxxxxxx` part of the embed host, from the
-Cloudflare dashboard → Stream → any video → Embed). Clips on `media.kedaipal.com` need nothing.
+Cloudflare dashboard → Stream → Videos). Videos are locked to play only on blog.kedaipal.com,
+so a local preview on `localhost:3000` shows Stream's "not allowed" message; that is expected.
+
+The block also understands `https://media.kedaipal.com/videos/<yyyy-mm>/<name>.mp4` links,
+for clips stored on Cloudflare R2. That path is not set up today (every video goes to
+Stream); it stays so clips can move to R2 later without touching published posts.
 
 ## Deployment
 

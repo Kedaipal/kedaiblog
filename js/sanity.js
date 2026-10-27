@@ -365,8 +365,9 @@ window.Blog = (function () {
 
   // ---------- Video (clip on R2, or Cloudflare Stream) ----------
 
-  // The ONLY two link shapes a Video block accepts — what upload.kedaipal.com hands
-  // the writer. The Studio input (studio/schemaTypes/VideoLinkInput.jsx) copies
+  // The ONLY two link shapes a Video block accepts. admin.kedaipal.com/videos hands
+  // writers a Stream link; the R2 clip shape is dormant (no bucket yet) but kept so
+  // clips can move to R2 later without touching published posts. The Studio input (studio/schemaTypes/VideoLinkInput.jsx) copies
   // these two regexes VERBATIM so the Studio refuses exactly what the site skips;
   // change them in both places together.
   //   Clip:   https://media.kedaipal.com/videos/<folder>/<name>.mp4   (folder is yyyy-mm; _test for smoke files)
