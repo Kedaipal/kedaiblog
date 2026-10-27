@@ -363,28 +363,36 @@ window.Blog = (function () {
     });
   }
 
-  // ---------- Video (clip on R2, or Cloudflare Stream) ----------
+  // ---------- Video (clip on R2, YouTube, or Cloudflare Stream) ----------
 
-  // The ONLY two link shapes a Video block accepts. admin.kedaipal.com/videos hands
-  // writers a Stream link; the R2 clip shape is dormant (no bucket yet) but kept so
-  // clips can move to R2 later without touching published posts. The Studio input (studio/schemaTypes/VideoLinkInput.jsx) copies
+  // The ONLY link shapes a Video block accepts. Clips up to 5 minutes are uploaded at
+  // admin.kedaipal.com/videos and stored on R2 (media.kedaipal.com); long videos live on
+  // the Kedaipal YouTube channel. Stream is dormant (no account) but still parsed, so
+  // nothing published ever breaks if it returns. The Studio input (studio/schemaTypes/VideoLinkInput.jsx) copies
   // these two regexes VERBATIM so the Studio refuses exactly what the site skips;
   // change them in both places together.
   //   Clip:   https://media.kedaipal.com/videos/<folder>/<name>.mp4   (folder is yyyy-mm; _test for smoke files)
+  //   YouTube: watch?v=, youtu.be/, /shorts/, /live/, /embed/, m.youtube.com, youtube-nocookie embed.
+  //           The same regex is in media/public/videos/lib/youtube.js (the admin page).
+  //           Only the 11-character id is ever used; the rest of the stored link is ignored.
   //   Stream: https://customer-<code>.cloudflarestream.com/<uid>/iframe, …/<uid>/watch, or a bare 32-hex uid.
   //           The customer code is captured only so the Studio can preview a thumbnail;
   //           the site rebuilds the player URL from the uid + STREAM_CUSTOMER_CODE.
   const VIDEO_FILE_RE = /^https:\/\/media\.kedaipal\.com\/videos\/([A-Za-z0-9_-]+)\/([A-Za-z0-9][A-Za-z0-9._-]*\.mp4)$/;
+  const VIDEO_YOUTUBE_RE = /^https:\/\/(?:(?:www\.|m\.)?youtube\.com\/(?:watch\?(?:[^#\s]*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/|www\.youtube-nocookie\.com\/embed\/)([A-Za-z0-9_-]{11})(?=$|[?&#/])\S*$/;
   const VIDEO_STREAM_RE = /^(?:https:\/\/(customer-[a-z0-9]+)\.cloudflarestream\.com\/([0-9a-f]{32})\/(?:iframe|watch)\/?(?:\?[^\s#]*)?|([0-9a-f]{32}))$/;
 
   const streamHost = () => (window.STREAM_CUSTOMER_CODE ? `https://customer-${window.STREAM_CUSTOMER_CODE}.cloudflarestream.com` : '');
 
-  // → {kind: 'file', src, poster} | {kind: 'stream', uid, src, poster} | null.
+  // → {kind: 'file', src, poster} | {kind: 'youtube', id, short, poster}
+  //   | {kind: 'stream', uid, src, poster} | null.
   // For Stream, src/poster are null until STREAM_CUSTOMER_CODE is set in js/config.js.
   function parseVideoLink(link) {
     const s = String(link ?? '').trim();
     let m = VIDEO_FILE_RE.exec(s);
     if (m) return { kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2] };
+    m = VIDEO_YOUTUBE_RE.exec(s);
+    if (m) return { kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` };
     m = VIDEO_STREAM_RE.exec(s);
     if (m) {
       const uid = m[2] || m[3];
@@ -421,13 +429,25 @@ window.Blog = (function () {
       console.warn('Video block skipped: set STREAM_CUSTOMER_CODE in js/config.js to play Cloudflare Stream videos.');
       return '';
     }
-    const aspect = aspectCss(b.posterDims) || aspectCss(b.aspect) || '16 / 9';
+    const aspect = aspectCss(b.posterDims) || aspectCss(b.aspect) || (v.short ? '9 / 16' : '16 / 9');
     const poster = b.poster ? imageUrl({ asset: { url: b.poster } }, 1344) : v.poster;
     const title = b.title?.trim();
     const caption = b.caption?.trim();
     let player;
     if (v.kind === 'file') {
       player = `<video controls playsinline preload="metadata" src="${esc(v.src)}" poster="${esc(poster)}"${title ? ` title="${esc(title)}"` : ''}></video>`;
+    } else if (v.kind === 'youtube') {
+      // Click-to-load: nothing from YouTube (script, cookies) loads until the reader
+      // presses play; initVideo() swaps this button for the embed. The thumbnail comes
+      // from YouTube's image CDN (i.ytimg.com), which sets no cookies.
+      // Full-size 16:9 thumbnail (1280 × 720); initVideo() falls back to the 480 × 360 one,
+      // which every video has, when YouTube has no full-size version.
+      const label = `Play: ${title || 'video'}`;
+      const thumb = b.poster ? poster : `https://i.ytimg.com/vi/${v.id}/maxresdefault.jpg`;
+      player = `<button class="video-facade" type="button" data-yt="${esc(v.id)}" data-title="${esc(title || '')}" aria-label="${esc(label)}">`
+        + `<img src="${esc(thumb)}"${b.poster ? '' : ` data-fallback="${esc(v.poster)}"`} alt="" loading="lazy" decoding="async" />`
+        + `<span class="video-facade-play" aria-hidden="true">${ICON_PLAY}</span>`
+        + `<span class="video-facade-source" aria-hidden="true">Plays from YouTube</span></button>`;
     } else {
       const src = b.poster ? `${v.src}&poster=${encodeURIComponent(poster)}` : v.src;
       player = `<iframe src="${esc(src)}" title="${esc(title || 'Video')}" loading="lazy"`
@@ -445,6 +465,46 @@ window.Blog = (function () {
         <div class="video-frame">${player}</div>
         ${figcaption}
       </figure>`;
+  }
+
+  const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+  // The only YouTube URL the site ever loads: rebuilt from the id, never the stored link.
+  // youtube-nocookie keeps cookies off until the reader interacts with the player.
+  function youtubeEmbedSrc(id) {
+    if (!YOUTUBE_ID_RE.test(id)) return null;
+    return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&playsinline=1`;
+  }
+
+  // Swaps each YouTube facade for the real player when it is clicked.
+  function initVideo(root = document) {
+    // A missing full-size thumbnail comes back as YouTube's 120 × 90 grey placeholder
+    root.querySelectorAll('.video-facade img[data-fallback]').forEach(img => {
+      const fallback = () => {
+        if (img.dataset.fallback && (!img.naturalWidth || img.naturalWidth <= 120)) {
+          img.src = img.dataset.fallback;
+          delete img.dataset.fallback;
+        }
+      };
+      if (img.complete) fallback();
+      img.addEventListener('load', fallback);
+      img.addEventListener('error', fallback);
+    });
+    root.querySelectorAll('.video-facade[data-yt]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const src = youtubeEmbedSrc(btn.dataset.yt);
+        if (!src) return;
+        const iframe = document.createElement('iframe');
+        iframe.src = src;
+        iframe.title = btn.dataset.title || 'YouTube video';
+        iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+        // YouTube refuses embeds that send no referrer (error 153)
+        iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+        iframe.allowFullscreen = true;
+        btn.replaceWith(iframe);
+        iframe.focus();
+      }, { once: true });
+    });
   }
 
   // ---------- Portable Text → HTML ----------
@@ -503,5 +563,5 @@ window.Blog = (function () {
     return out;
   }
 
-  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, parseVideoLink, videoPlayer, initAudio, initGallery };
+  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, parseVideoLink, videoPlayer, youtubeEmbedSrc, initAudio, initGallery, initVideo };
 })();

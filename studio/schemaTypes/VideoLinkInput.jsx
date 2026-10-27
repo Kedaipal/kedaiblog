@@ -4,20 +4,24 @@ import {MemberField, set, unset} from 'sanity'
 import {VideoIcon} from '@sanity/icons/Video'
 
 /*
- * The Video block: one "Video link" field that takes the link admin.kedaipal.com/videos
- * hands out (Cloudflare Stream) and works out which player the site should use. The R2
- * clip shape is dormant today but still accepted, so clips can move to R2 later.
+ * The Video block: one "Video link" field that works out which player the site uses.
+ *   Clip (≤ 5 min, uploaded at admin.kedaipal.com/videos, stored on R2):
+ *           https://media.kedaipal.com/videos/<folder>/<name>.mp4
+ *   YouTube (long videos, on the Kedaipal channel): watch?v=, youtu.be/, /shorts/, /live/,
+ *           /embed/, m.youtube.com, youtube-nocookie embed. Same regex as the admin page's
+ *           media/public/videos/lib/youtube.js.
+ *   Stream (dormant, no account): …cloudflarestream.com/<uid>/iframe|watch, or a bare uid.
  *
- * The two regexes below are copied VERBATIM from js/sanity.js (parseVideoLink), so the
- * Studio refuses exactly the links the site would skip. Change them in both files together.
- *   Clip:   https://media.kedaipal.com/videos/<folder>/<name>.mp4
- *   Stream: https://customer-<code>.cloudflarestream.com/<uid>/iframe, …/<uid>/watch, or a bare 32-hex uid
+ * The regexes below are copied VERBATIM from js/sanity.js (parseVideoLink), so the Studio
+ * refuses exactly the links the site would skip. Change them in every file together; a
+ * test fails if they drift.
  */
 const VIDEO_FILE_RE = /^https:\/\/media\.kedaipal\.com\/videos\/([A-Za-z0-9_-]+)\/([A-Za-z0-9][A-Za-z0-9._-]*\.mp4)$/;
+const VIDEO_YOUTUBE_RE = /^https:\/\/(?:(?:www\.|m\.)?youtube\.com\/(?:watch\?(?:[^#\s]*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/|www\.youtube-nocookie\.com\/embed\/)([A-Za-z0-9_-]{11})(?=$|[?&#/])\S*$/;
 const VIDEO_STREAM_RE = /^(?:https:\/\/(customer-[a-z0-9]+)\.cloudflarestream\.com\/([0-9a-f]{32})\/(?:iframe|watch)\/?(?:\?[^\s#]*)?|([0-9a-f]{32}))$/;
 
 export const BAD_LINK_MESSAGE =
-  "That's not a link from admin.kedaipal.com/videos. Upload the video there first, then paste the link it gives you."
+  "That's not a link we can play. Upload a clip at admin.kedaipal.com/videos, or paste the link of a video on our YouTube channel."
 
 // Studio-side twin of parseVideoLink in js/sanity.js. The Stream thumbnail here uses the
 // customer code from the pasted link — preview only; the site uses STREAM_CUSTOMER_CODE.
@@ -25,6 +29,8 @@ export function parseVideoLink(link) {
   const s = String(link ?? '').trim()
   let m = VIDEO_FILE_RE.exec(s)
   if (m) return {kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2]}
+  m = VIDEO_YOUTUBE_RE.exec(s)
+  if (m) return {kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg`}
   m = VIDEO_STREAM_RE.exec(s)
   if (m) {
     const uid = m[2] || m[3]
@@ -43,17 +49,20 @@ export function aspectString(w, h) {
 
 const KIND = {
   file: {label: 'Clip', detail: 'stored on media.kedaipal.com', tone: 'positive'},
-  stream: {label: 'Stream', detail: 'adaptive', tone: 'primary'},
+  youtube: {label: 'YouTube', detail: 'plays from our YouTube channel', tone: 'primary'},
+  stream: {label: 'Stream', detail: 'not set up — won’t show on the site', tone: 'caution'},
 }
+
+const idOf = (v) => (v.kind === 'file' ? v.name : v.kind === 'youtube' ? v.id : v.uid)
 
 // Used by the block's preview in post.js (title row in the body editor)
 export function videoPreview({title, link, poster}) {
   const v = parseVideoLink(link)
   const subtitle = v
-    ? `${KIND[v.kind].label} · ${v.kind === 'file' ? v.name : v.uid}`
+    ? `${KIND[v.kind].label}${v.short ? ' Short' : ''} · ${idOf(v)}`
     : link
-      ? 'Not a link from admin.kedaipal.com/videos'
-      : 'Paste a link from admin.kedaipal.com/videos'
+      ? 'Not a link we can play'
+      : 'Paste a clip link or a YouTube link'
   const media = poster?.asset
     ? poster
     : v?.poster
@@ -95,7 +104,7 @@ function Thumb({src, kind}) {
             <VideoIcon />
           </Text>
           <Text size={0} style={{color: 'inherit'}}>
-            {src ? 'Poster not ready yet' : kind === 'stream' ? 'Thumbnail shows on the site' : 'No preview'}
+            {src ? (kind === 'youtube' ? 'Thumbnail unavailable' : 'Poster not ready yet') : 'No preview'}
           </Text>
         </Stack>
       )}
@@ -107,9 +116,11 @@ function Thumb({src, kind}) {
 function LinkStatus({parsed, probe}) {
   const kind = KIND[parsed.kind]
   const detail =
-    parsed.kind === 'stream'
-      ? `Plays through Cloudflare Stream at the best quality for the reader's connection · video ${parsed.uid}`
-      : probe.state === 'loading'
+    parsed.kind === 'youtube'
+      ? `${parsed.short ? 'Vertical Short, shown 9:16' : 'Shown 16:9'}. Nothing loads from YouTube until the reader presses play · video ${parsed.id}`
+      : parsed.kind === 'stream'
+        ? 'Cloudflare Stream isn’t set up, so the site skips this video. Upload a clip at admin.kedaipal.com/videos or use a YouTube link instead.'
+        : probe.state === 'loading'
         ? 'Reading the clip’s size…'
         : probe.state === 'ok'
           ? `${probe.width} × ${probe.height} · ${probe.aspect.replace('/', ':')}${probe.duration ? ` · ${clock(probe.duration)}` : ''}`
@@ -151,8 +162,8 @@ export function VideoLinkInput(props) {
 
   // Fill the hidden `aspect` field so the page can reserve the right box.
   // Clip: read the real size from the file's metadata (a <video preload="metadata">
-  // needs no CORS). Stream: the player is 16:9.
-  const key = parsed ? `${parsed.kind}:${parsed.kind === 'file' ? parsed.src : parsed.uid}` : ''
+  // needs no CORS). YouTube: 16:9, or 9:16 for a Short. Stream: 16:9.
+  const key = parsed ? `${parsed.kind}:${parsed.kind === 'file' ? parsed.src : idOf(parsed)}` : ''
   useEffect(() => {
     const write = (aspect) => {
       if ((current.current?.aspect || null) !== aspect) onChange(aspect ? set(aspect, ['aspect']) : unset(['aspect']))
@@ -162,9 +173,9 @@ export function VideoLinkInput(props) {
       if (current.current?.aspect) write(null)
       return
     }
-    if (parsed.kind === 'stream') {
+    if (parsed.kind !== 'file') {
       setProbe({state: 'idle'})
-      write('16/9')
+      write(parsed.short ? '9/16' : '16/9')
       return
     }
     setProbe({state: 'loading'})

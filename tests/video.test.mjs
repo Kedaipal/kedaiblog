@@ -69,6 +69,41 @@ describe('parseVideoLink', () => {
     assert.deepEqual(plain(load({streamCode: ''}).parseVideoLink(UID)), {kind: 'stream', uid: UID, src: null, poster: null})
   })
 
+  test('YouTube: every accepted shape resolves to the 11-character id', () => {
+    const ID = 'M7lc1UVf-VE'
+    for (const link of [
+      `https://www.youtube.com/watch?v=${ID}`,
+      `https://www.youtube.com/watch?v=${ID}&t=42s`,
+      `https://www.youtube.com/watch?feature=share&list=PL123&v=${ID}`,
+      `https://youtube.com/watch?v=${ID}`,
+      `https://m.youtube.com/watch?v=${ID}`,
+      `https://youtu.be/${ID}`,
+      `https://youtu.be/${ID}?si=abc123`,
+      `https://www.youtube.com/live/${ID}`,
+      `https://www.youtube.com/embed/${ID}`,
+      `https://www.youtube-nocookie.com/embed/${ID}?start=10`,
+    ]) {
+      assert.deepEqual(plain(parseVideoLink(link)), {kind: 'youtube', id: ID, short: false, poster: `https://i.ytimg.com/vi/${ID}/hqdefault.jpg`}, link)
+    }
+    assert.deepEqual(plain(parseVideoLink(`https://www.youtube.com/shorts/${ID}`)), {kind: 'youtube', id: ID, short: true, poster: `https://i.ytimg.com/vi/${ID}/hqdefault.jpg`})
+  })
+
+  test('YouTube: lookalikes, other hosts and non-video pages are rejected', () => {
+    for (const bad of [
+      'http://www.youtube.com/watch?v=M7lc1UVf-VE',
+      'https://www.youtube.com/watch?v=M7lc1UVf-VEx', // 12 characters
+      'https://www.youtube.com/watch?v=M7lc1UVf-V', // 10 characters
+      'https://www.youtube.com.evil.com/watch?v=M7lc1UVf-VE',
+      'https://evil.com/?u=https://youtu.be/M7lc1UVf-VE',
+      'https://music.youtube.com/watch?v=M7lc1UVf-VE',
+      'https://www.youtube.com/@kedaipal',
+      'https://www.youtube.com/playlist?list=PL1234567890',
+      'https://youtube-nocookie.com/embed/M7lc1UVf-VE', // no www
+    ]) {
+      assert.equal(parseVideoLink(bad), null, `should reject: ${bad}`)
+    }
+  })
+
   test('everything else is rejected', () => {
     for (const bad of [
       '',
@@ -91,7 +126,6 @@ describe('parseVideoLink', () => {
       `https://customer-abc.cloudflarestream.com/${UID.slice(1)}/iframe`, // 31 hex
       UID.toUpperCase(),
       `${UID}/iframe`,
-      'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
       `javascript:alert(1)//${UID}`,
       `${CLIP}" onmouseover="alert(1)`,
     ]) {
@@ -143,6 +177,35 @@ describe('videoPlayer', () => {
     assert.match(html, /<figcaption><strong>A &lt;b&gt;title&lt;\/b&gt;<\/strong> Line one<br \/>Line &quot;two&quot;<\/figcaption>/)
   })
 
+  test('YouTube: a click-to-load button, nothing from youtube.com in the page until play', () => {
+    const html = render({link: 'https://youtu.be/M7lc1UVf-VE?si=x', title: 'Episode 1'})
+    assert.match(html, /<figure class="video video--youtube" style="--aspect: 16 \/ 9">/)
+    assert.match(html, /<button class="video-facade" type="button" data-yt="M7lc1UVf-VE" data-title="Episode 1" aria-label="Play: Episode 1">/)
+    assert.match(html, /<img src="https:\/\/i\.ytimg\.com\/vi\/M7lc1UVf-VE\/maxresdefault\.jpg" data-fallback="https:\/\/i\.ytimg\.com\/vi\/M7lc1UVf-VE\/hqdefault\.jpg" alt="" loading="lazy"/)
+    assert.doesNotMatch(html, /youtube\.com|youtube-nocookie|<iframe/, 'no YouTube embed before the click')
+    assert.match(render({link: 'https://youtu.be/M7lc1UVf-VE'}), /aria-label="Play: video"/)
+  })
+
+  test('YouTube: a Short gets a 9:16 box; a stored aspect or poster override still wins', () => {
+    assert.match(render({link: 'https://www.youtube.com/shorts/M7lc1UVf-VE'}), /class="video video--youtube video--portrait" style="--aspect: 9 \/ 16"/)
+    assert.match(render({link: 'https://www.youtube.com/shorts/M7lc1UVf-VE', aspect: '9/16'}), /--aspect: 9 \/ 16/)
+    const poster = 'https://cdn.sanity.io/images/cvycqoxz/production/abc-1600x900.jpg'
+    const html = render({link: 'https://youtu.be/M7lc1UVf-VE', poster, posterDims: {width: 1600, height: 900}})
+    assert.match(html, /<img src="https:\/\/cdn\.sanity\.io\/images\/cvycqoxz\/production\/abc-1600x900\.jpg\?w=1344/)
+    assert.doesNotMatch(html, /data-fallback|ytimg/, 'an override poster needs no YouTube thumbnail')
+  })
+
+  test('YouTube: the embed URL is rebuilt from the id only, never the stored link', () => {
+    const {youtubeEmbedSrc} = load()
+    assert.equal(youtubeEmbedSrc('M7lc1UVf-VE'), 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1&rel=0&playsinline=1')
+    assert.equal(youtubeEmbedSrc('M7lc1UVf-VE"><x'), null)
+    assert.equal(youtubeEmbedSrc(''), null)
+    // The regex allows any tail after the id; the markup only ever carries the id
+    const html = render({link: 'https://www.youtube.com/watch?v=M7lc1UVf-VE&x="><script>alert(1)</script>'})
+    assert.doesNotMatch(html, /<script>|alert/)
+    assert.match(html, /data-yt="M7lc1UVf-VE"/)
+  })
+
   test('every attribute goes through esc: a hostile link can never break out of the markup', () => {
     // These never parse, so they render nothing at all…
     assert.equal(render({link: `${CLIP}" onmouseover="alert(1)`}), '')
@@ -183,12 +246,12 @@ describe('Studio input mirrors the site parser', () => {
     assert.ok(m, `${name} not found`)
     return m[1]
   }
-  test('both regexes are byte-for-byte identical in js/sanity.js and VideoLinkInput.jsx', () => {
-    for (const name of ['VIDEO_FILE_RE', 'VIDEO_STREAM_RE']) {
+  test('the regexes are byte-for-byte identical in js/sanity.js and VideoLinkInput.jsx', () => {
+    for (const name of ['VIDEO_FILE_RE', 'VIDEO_YOUTUBE_RE', 'VIDEO_STREAM_RE']) {
       assert.equal(pick(STUDIO_INPUT, name), pick(SANITY_JS, name), name)
     }
   })
-  test('the Studio message names admin.kedaipal.com/videos', () => {
-    assert.match(STUDIO_INPUT, /That's not a link from admin\.kedaipal\.com\/videos\. Upload the video there first, then paste the link it gives you\./)
+  test('the Studio message points to the admin page and the YouTube channel', () => {
+    assert.match(STUDIO_INPUT, /That's not a link we can play\. Upload a clip at admin\.kedaipal\.com\/videos, or paste the link of a video on our YouTube channel\./)
   })
 })

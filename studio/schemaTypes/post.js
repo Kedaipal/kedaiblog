@@ -245,7 +245,7 @@ export default defineType({
               name: 'link',
               title: 'Video link',
               type: 'string',
-              description: 'Paste the link from admin.kedaipal.com/videos.',
+              description: 'A clip from admin.kedaipal.com/videos, or the link of a video on our YouTube channel.',
               validation: (r) =>
                 r.required().custom((link) => (!link || parseVideoLink(link) ? true : BAD_LINK_MESSAGE)),
             }),
