@@ -20,6 +20,19 @@ const VIDEO_FILE_RE = /^https:\/\/media\.kedaipal\.com\/videos\/([A-Za-z0-9_-]+)
 const VIDEO_YOUTUBE_RE = /^https:\/\/(?:(?:www\.|m\.)?youtube\.com\/(?:watch\?(?:[^#\s]*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/|www\.youtube-nocookie\.com\/embed\/)([A-Za-z0-9_-]{11})(?=$|[?&#/])\S*$/;
 const VIDEO_STREAM_RE = /^(?:https:\/\/(customer-[a-z0-9]+)\.cloudflarestream\.com\/([0-9a-f]{32})\/(?:iframe|watch)\/?(?:\?[^\s#]*)?|([0-9a-f]{32}))$/;
 
+export const PLAYLIST_MESSAGE = "That's a playlist. Paste the link of a single video from it."
+
+// A YouTube link that carries a playlist but no single video (playlist?list=,
+// watch?list= without v=, embed/videoseries?list=). Only consulted after parseVideoLink
+// has refused the link, so watch?v=<id>&list=… still counts as one video.
+const YOUTUBE_PLAYLIST_RE = /^https:\/\/(?:(?:www\.|m\.)?youtube\.com|youtu\.be|www\.youtube-nocookie\.com)\/\S*[?&]list=/
+
+// The Studio's validation message for a link, or true when it's playable.
+export function videoLinkError(link) {
+  if (!link || parseVideoLink(link)) return true
+  return YOUTUBE_PLAYLIST_RE.test(String(link).trim()) ? PLAYLIST_MESSAGE : BAD_LINK_MESSAGE
+}
+
 export const BAD_LINK_MESSAGE =
   "That's not a link we can play. Upload a clip at admin.kedaipal.com/videos, or paste the link of a video on our YouTube channel."
 
@@ -30,7 +43,8 @@ export function parseVideoLink(link) {
   let m = VIDEO_FILE_RE.exec(s)
   if (m) return {kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2]}
   m = VIDEO_YOUTUBE_RE.exec(s)
-  if (m) return {kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg`}
+  // embed/videoseries?list=… is a playlist, not an 11-character video id
+  if (m && m[1] !== 'videoseries') return {kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg`}
   m = VIDEO_STREAM_RE.exec(s)
   if (m) {
     const uid = m[2] || m[3]

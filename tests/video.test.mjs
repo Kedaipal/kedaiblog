@@ -104,6 +104,16 @@ describe('parseVideoLink', () => {
     }
   })
 
+  test('YouTube: playlists are refused; a single video from a playlist is accepted', () => {
+    assert.equal(parseVideoLink('https://www.youtube.com/embed/videoseries?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'), null)
+    assert.equal(parseVideoLink('https://www.youtube-nocookie.com/embed/videoseries?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'), null)
+    assert.equal(parseVideoLink('https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'), null)
+    assert.equal(parseVideoLink('https://www.youtube.com/watch?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'), null)
+    const v = parseVideoLink('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG&index=2')
+    assert.deepEqual(plain(v), {kind: 'youtube', id: 'dQw4w9WgXcQ', short: false, poster: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg'})
+    assert.doesNotMatch(load().videoPlayer({link: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'}), /list=|PLx0s/, 'the playlist never reaches the page')
+  })
+
   test('everything else is rejected', () => {
     for (const bad of [
       '',
@@ -154,8 +164,10 @@ describe('videoPlayer', () => {
     assert.match(html, /<figcaption><strong>Episode 4<\/strong><\/figcaption>/)
   })
 
-  test('aspect: poster override dims win, then the block aspect, then 16/9', () => {
-    assert.match(render({link: CLIP, aspect: '9/16', posterDims: {width: 1200, height: 900}}), /--aspect: 1200 \/ 900/)
+  test('aspect: the video sets the frame (block aspect, else 16:9); a poster never does', () => {
+    const square = {asset: {url: 'https://cdn.sanity.io/images/opzqnhfl/production/sq-1000x1000.jpg', metadata: {dimensions: {width: 1000, height: 1000}}}}
+    assert.match(render({link: CLIP, aspect: '16/9', poster: square}), /--aspect: 16 \/ 9"/, 'square poster on a 16:9 clip')
+    assert.match(render({link: CLIP, aspect: '9/16', poster: square}), /--aspect: 9 \/ 16"/, 'square poster on a vertical clip')
     assert.match(render({link: CLIP, aspect: '9/16'}), /class="video video--file video--portrait" style="--aspect: 9 \/ 16"/)
     assert.doesNotMatch(render({link: CLIP, aspect: '4/3'}), /video--portrait/)
     assert.match(render({link: CLIP, aspect: ' 4 / 3 '}), /--aspect: 4 \/ 3/)
@@ -164,12 +176,23 @@ describe('videoPlayer', () => {
     assert.match(render({link: CLIP, aspect: '16/9; background: url(x)'}), /--aspect: 16 \/ 9"/, 'garbage never reaches the style attribute')
   })
 
-  test('poster override: a Sanity CDN URL replaces the automatic poster', () => {
-    const poster = 'https://cdn.sanity.io/images/cvycqoxz/production/abc-1600x900.jpg'
-    const clip = render({link: CLIP, poster, posterDims: {width: 1600, height: 900}})
-    assert.match(clip, /poster="https:\/\/cdn\.sanity\.io\/images\/cvycqoxz\/production\/abc-1600x900\.jpg\?w=1344&amp;auto=format&amp;q=80"/)
-    const stream = render({link: UID, poster})
-    assert.match(stream, /iframe\?preload=metadata&amp;poster=https%3A%2F%2Fcdn\.sanity\.io/)
+  test('poster override: cut to the frame\'s shape so it covers it, edge to edge', () => {
+    const square = {asset: {url: 'https://cdn.sanity.io/images/opzqnhfl/production/sq-1000x1000.jpg', metadata: {dimensions: {width: 1000, height: 1000}}}}
+    assert.match(render({link: CLIP, aspect: '16/9', poster: square}), /poster="https:\/\/cdn\.sanity\.io\/images\/opzqnhfl\/production\/sq-1000x1000\.jpg\?w=1344&amp;h=756&amp;fit=crop&amp;auto=format&amp;q=80"/)
+    assert.match(render({link: CLIP, aspect: '9/16', poster: square}), /sq-1000x1000\.jpg\?w=756&amp;h=1344&amp;fit=crop/)
+    const stream = render({link: UID, poster: square})
+    assert.match(stream, /iframe\?preload=metadata&amp;poster=https%3A%2F%2Fcdn\.sanity\.io%2Fimages%2Fopzqnhfl%2Fproduction%2Fsq-1000x1000\.jpg%3Fw%3D1344%26h%3D756/)
+    assert.doesNotMatch(render({link: CLIP, poster: {asset: null}}), /cdn\.sanity\.io/, 'a poster with no asset is ignored')
+  })
+
+  test('poster override: the Studio\'s crop and hotspot are honoured', () => {
+    const cropped = {
+      crop: {left: 0.25, right: 0.25, top: 0, bottom: 0},
+      hotspot: {x: 0.6, y: 0.4, width: 0.2, height: 0.2},
+      asset: {url: 'https://cdn.sanity.io/images/opzqnhfl/production/wide-1600x900.jpg', metadata: {dimensions: {width: 1600, height: 900}}},
+    }
+    assert.match(render({link: CLIP, aspect: '16/9', poster: cropped}),
+      /wide-1600x900\.jpg\?rect=400%2C0%2C800%2C900&amp;w=1344&amp;h=756&amp;fit=crop&amp;crop=focalpoint&amp;fp-x=0\.700&amp;fp-y=0\.400&amp;auto=format&amp;q=80"/)
   })
 
   test('caption: text under the player, newlines kept, escaped', () => {
@@ -186,12 +209,13 @@ describe('videoPlayer', () => {
     assert.match(render({link: 'https://youtu.be/M7lc1UVf-VE'}), /aria-label="Play: video"/)
   })
 
-  test('YouTube: a Short gets a 9:16 box; a stored aspect or poster override still wins', () => {
+  test('YouTube: a Short gets a 9:16 box; a poster override is cut to the frame', () => {
     assert.match(render({link: 'https://www.youtube.com/shorts/M7lc1UVf-VE'}), /class="video video--youtube video--portrait" style="--aspect: 9 \/ 16"/)
     assert.match(render({link: 'https://www.youtube.com/shorts/M7lc1UVf-VE', aspect: '9/16'}), /--aspect: 9 \/ 16/)
-    const poster = 'https://cdn.sanity.io/images/cvycqoxz/production/abc-1600x900.jpg'
-    const html = render({link: 'https://youtu.be/M7lc1UVf-VE', poster, posterDims: {width: 1600, height: 900}})
-    assert.match(html, /<img src="https:\/\/cdn\.sanity\.io\/images\/cvycqoxz\/production\/abc-1600x900\.jpg\?w=1344/)
+    const square = {asset: {url: 'https://cdn.sanity.io/images/opzqnhfl/production/sq-1000x1000.jpg', metadata: {dimensions: {width: 1000, height: 1000}}}}
+    const html = render({link: 'https://youtu.be/M7lc1UVf-VE', poster: square})
+    assert.match(html, /style="--aspect: 16 \/ 9"/, 'square poster on a YouTube video keeps the 16:9 frame')
+    assert.match(html, /<img src="https:\/\/cdn\.sanity\.io\/images\/opzqnhfl\/production\/sq-1000x1000\.jpg\?w=1344&amp;h=756&amp;fit=crop/)
     assert.doesNotMatch(html, /data-fallback|ytimg/, 'an override poster needs no YouTube thumbnail')
   })
 
@@ -251,6 +275,23 @@ describe('Studio input mirrors the site parser', () => {
       assert.equal(pick(STUDIO_INPUT, name), pick(SANITY_JS, name), name)
     }
   })
+  test('both parsers refuse the videoseries playlist embed the same way', () => {
+    const rule = "m[1] !== 'videoseries'"
+    assert.ok(SANITY_JS.includes(rule), 'js/sanity.js')
+    assert.ok(STUDIO_INPUT.includes(rule), 'VideoLinkInput.jsx')
+  })
+
+  test('the Studio tells a playlist apart from any other refused link', () => {
+    assert.match(STUDIO_INPUT, /"That's a playlist\. Paste the link of a single video from it\."/)
+    const re = new Function('return ' + STUDIO_INPUT.match(/const YOUTUBE_PLAYLIST_RE = (\/.*\/)\n/)[1])()
+    for (const link of [
+      'https://www.youtube.com/embed/videoseries?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG',
+      'https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG',
+      'https://m.youtube.com/watch?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG',
+    ]) assert.ok(re.test(link), link)
+    for (const link of ['https://example.com/?list=PL1', 'https://www.youtube.com/@kedaipal']) assert.ok(!re.test(link), link)
+  })
+
   test('the Studio message points to the admin page and the YouTube channel', () => {
     assert.match(STUDIO_INPUT, /That's not a link we can play\. Upload a clip at admin\.kedaipal\.com\/videos, or paste the link of a video on our YouTube channel\./)
   })

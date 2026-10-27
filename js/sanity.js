@@ -52,7 +52,7 @@ window.Blog = (function () {
           ${CARD},
           articleImage${IMAGE},
           articleImageMobile${IMAGE},
-          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}, _type == "gallery" => {caption, "images": images[]${IMAGE.slice(0, -1)}, caption}}, _type == "video" => {link, aspect, title, caption, "poster": poster.asset->url, "posterAlt": poster.alt, "posterDims": poster.asset->metadata.dimensions}}
+          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}, _type == "gallery" => {caption, "images": images[]${IMAGE.slice(0, -1)}, caption}}, _type == "video" => {link, aspect, title, caption, "poster": poster{crop, hotspot, asset->{url, metadata{dimensions}}}}}
         },
         "others": *[_type == "post" && slug.current != $slug && publishedAt <= now()] | order(publishedAt desc)[0...12]{${CARD}}
       }`, { slug });
@@ -392,7 +392,8 @@ window.Blog = (function () {
     let m = VIDEO_FILE_RE.exec(s);
     if (m) return { kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2] };
     m = VIDEO_YOUTUBE_RE.exec(s);
-    if (m) return { kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` };
+    // embed/videoseries?list=… is a playlist, not an 11-character video id
+    if (m && m[1] !== 'videoseries') return { kind: 'youtube', id: m[1], short: /\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` };
     m = VIDEO_STREAM_RE.exec(s);
     if (m) {
       const uid = m[2] || m[3];
@@ -407,19 +408,29 @@ window.Blog = (function () {
     return null;
   }
 
-  // "W/H" string (from the Studio) or {width, height} (poster dims) → "W / H" for CSS, else null
+  // "W/H" string (the block's aspect, written by the Studio) → "W / H" for CSS, else null
   function aspectCss(value) {
-    let w, h;
-    if (value && typeof value === 'object') ({ width: w, height: h } = value);
-    else {
-      const m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(String(value ?? ''));
-      if (m) [, w, h] = m;
-    }
-    w = Number(w); h = Number(h);
+    const m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(String(value ?? ''));
+    const w = Number(m?.[1]), h = Number(m?.[2]);
     return w > 0 && h > 0 ? `${w} / ${h}` : null;
   }
 
+  // A poster override, cut by the Sanity CDN to the frame's exact shape (honouring the
+  // Studio's crop and hotspot), so it covers the frame edge to edge. A <video>'s poster
+  // follows the video's object-fit, which stays `contain` so the clip itself is never
+  // cropped; serving the poster at the frame's shape gives the cover look in every browser.
+  function posterFor(img, aspect) {
+    if (!has(img)) return null;
+    const [aw, ah] = aspect.split(' / ').map(Number);
+    const w = aw >= ah ? 1344 : Math.round((1344 * aw) / ah);
+    const h = aw >= ah ? Math.round((1344 * ah) / aw) : 1344;
+    return imageUrl(img, w, h);
+  }
+
   // The box is sized by --aspect before any media loads, so the article never jumps.
+  // The frame always takes the VIDEO's shape: the clip's own aspect (read from its file by
+  // the Studio), else 9:16 for a YouTube Short, else 16:9. A poster override never sets
+  // it; the poster is cut to the frame's shape instead (see posterFor).
   // Clips play in a plain <video>; long videos in Cloudflare Stream's adaptive iframe.
   // Deliberately no autoplay, muted or loop — it's an article, not a feed.
   function videoPlayer(b) {
@@ -429,8 +440,9 @@ window.Blog = (function () {
       console.warn('Video block skipped: set STREAM_CUSTOMER_CODE in js/config.js to play Cloudflare Stream videos.');
       return '';
     }
-    const aspect = aspectCss(b.posterDims) || aspectCss(b.aspect) || (v.short ? '9 / 16' : '16 / 9');
-    const poster = b.poster ? imageUrl({ asset: { url: b.poster } }, 1344) : v.poster;
+    const aspect = aspectCss(b.aspect) || (v.short ? '9 / 16' : '16 / 9');
+    const custom = posterFor(b.poster, aspect);
+    const poster = custom || v.poster;
     const title = b.title?.trim();
     const caption = b.caption?.trim();
     let player;
@@ -443,13 +455,13 @@ window.Blog = (function () {
       // Full-size 16:9 thumbnail (1280 × 720); initVideo() falls back to the 480 × 360 one,
       // which every video has, when YouTube has no full-size version.
       const label = `Play: ${title || 'video'}`;
-      const thumb = b.poster ? poster : `https://i.ytimg.com/vi/${v.id}/maxresdefault.jpg`;
+      const thumb = custom || `https://i.ytimg.com/vi/${v.id}/maxresdefault.jpg`;
       player = `<button class="video-facade" type="button" data-yt="${esc(v.id)}" data-title="${esc(title || '')}" aria-label="${esc(label)}">`
-        + `<img src="${esc(thumb)}"${b.poster ? '' : ` data-fallback="${esc(v.poster)}"`} alt="" loading="lazy" decoding="async" />`
+        + `<img src="${esc(thumb)}"${custom ? '' : ` data-fallback="${esc(v.poster)}"`} alt="" loading="lazy" decoding="async" />`
         + `<span class="video-facade-play" aria-hidden="true">${ICON_PLAY}</span>`
         + `<span class="video-facade-source" aria-hidden="true">Plays from YouTube</span></button>`;
     } else {
-      const src = b.poster ? `${v.src}&poster=${encodeURIComponent(poster)}` : v.src;
+      const src = custom ? `${v.src}&poster=${encodeURIComponent(custom)}` : v.src;
       player = `<iframe src="${esc(src)}" title="${esc(title || 'Video')}" loading="lazy"`
         + ` allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
     }

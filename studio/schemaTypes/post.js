@@ -5,7 +5,7 @@ import {PlayIcon} from '@sanity/icons/Play'
 import {ImagesIcon} from '@sanity/icons/Images'
 import {VideoIcon} from '@sanity/icons/Video'
 import {CategorySelect} from './CategorySelect'
-import {BAD_LINK_MESSAGE, VideoLinkInput, parseVideoLink, videoPreview} from './VideoLinkInput'
+import {VideoLinkInput, videoLinkError, videoPreview} from './VideoLinkInput'
 
 // Image upload with alt text, grouped under "Images" in the form
 const imageField = ({name, title, description}) =>
@@ -247,7 +247,7 @@ export default defineType({
               type: 'string',
               description: 'A clip from admin.kedaipal.com/videos, or the link of a video on our YouTube channel.',
               validation: (r) =>
-                r.required().custom((link) => (!link || parseVideoLink(link) ? true : BAD_LINK_MESSAGE)),
+                r.required().custom(videoLinkError),
             }),
             // "W/H", e.g. "16/9" — written by VideoLinkInput from the clip's own size, so the
             // page can reserve the right box before the video loads. Stream is always 16/9.
@@ -256,16 +256,11 @@ export default defineType({
               name: 'poster',
               title: 'Poster',
               type: 'image',
-              description: 'Only if you want a different frame than the automatic one.',
+              description:
+                'Only if you want a different frame than the automatic one. It is cut to the video\'s shape, so set the crop and hotspot to keep the subject in view.',
               options: {hotspot: true},
-              fields: [
-                defineField({
-                  name: 'alt',
-                  title: 'Alt text',
-                  type: 'string',
-                  description: 'Describe the frame for screen readers.',
-                }),
-              ],
+              // No alt text: the poster is decorative. The video's title and caption carry its
+              // meaning, and the play button is named after the title.
             }),
             defineField({
               name: 'title',
