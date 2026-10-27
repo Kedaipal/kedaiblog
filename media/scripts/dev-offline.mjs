@@ -19,6 +19,8 @@
  * Options:
  *   --no-access       the access list says no → the "no admin access" page
  *   --convex-down     the access check fails → the "could not check" page
+ *   --no-store        the tester has no store (like a blog editor) → the header
+ *                     links to the site, not "Kedaipal app"
  *   --port=8787       the page's port (the mock uses port + 3)
  * Anything else is passed to `wrangler dev` (e.g. `--persist-to <dir>` for a
  * second instance beside a running one — two in the same folder share
@@ -31,7 +33,7 @@ import {spawn} from 'node:child_process'
 import {createServer} from 'node:http'
 import {generateKeyPairSync, createSign, randomUUID} from 'node:crypto'
 
-const OWN = /^--(no-access|convex-down|port=\d+)$/
+const OWN = /^--(no-access|convex-down|no-store|port=\d+)$/
 const argv = process.argv.slice(2)
 const args = new Set(argv.filter((a) => OWN.test(a)))
 const passThrough = argv.filter((a) => !OWN.test(a))
@@ -67,14 +69,14 @@ const server = createServer((req, res) => {
       return res.end(JSON.stringify({status: 'error', errorMessage: 'offline mock: Convex is down'}))
     }
     res.writeHead(200, {'content-type': 'application/json'})
-    return res.end(JSON.stringify({status: 'success', value: {areas}}))
+    return res.end(JSON.stringify({status: 'success', value: {areas, hasStore: !args.has('--no-store')}}))
   }
   res.writeHead(404).end()
 })
 
 server.listen(MOCK_PORT, 'localhost', () => {
   const token = mintToken()
-  console.log(`\n  Offline mock (login + access list) on ${ISSUER} — access: ${areas.length ? 'videos' : 'none'}${args.has('--convex-down') ? ' (Convex down)' : ''}`)
+  console.log(`\n  Offline mock (login + access list) on ${ISSUER} — access: ${areas.length ? 'videos' : 'none'}, store: ${args.has('--no-store') ? 'none' : 'yes'}${args.has('--convex-down') ? ' (Convex down)' : ''}`)
   console.log(`  Open ${ORIGIN}/videos\n`)
   const vars = {
     CLERK_PUBLISHABLE_KEY: 'offline',

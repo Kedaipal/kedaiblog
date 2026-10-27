@@ -29,7 +29,12 @@ Decision record and link contract: ClickUp
   `/videos/sign-in` (sign-in only, always back to `/videos`).
 - **Access** is one list in the main app's Convex: query `adminAccess:mine` must
   return `"videos"` (blog editors in `BLOG_EDITOR_USER_IDS`, plus super-admins).
-  Signed in without it → "You don't have admin access" and a button to the app.
+  Signed in without it → "You don't have admin access" and a way out.
+- **The way out depends on having a store.** The same query says `hasStore` (an
+  owned store or an active team membership — the app's own rule). With one, the
+  header reads **Kedaipal app**; without one it reads **kedaipal.com**, because
+  the app would only offer a storeless blog editor "create your store". A Convex
+  that predates the field counts as no store.
 - **The lock is in the Worker.** The shell is public. Every `/videos/api/*` call
   carries a Clerk `convex`-template token, verified here (`src/clerk.js`: RS256
   against the instance's JWKS, `iss`, `exp`/`nbf`, `azp`, `aud`) and then checked
@@ -65,11 +70,13 @@ npm run dev           # http://localhost:8787/videos — real Clerk DEV sign-in 
   a tiny local stand-in for Clerk (a key and token generated at start) and for
   Convex (the access answer). Nothing leaves the laptop except the YouTube check.
   `-- --no-access` shows the no-access page; `-- --convex-down` the
-  "could not check" page. Clips are served from
+  "could not check" page; `-- --no-store` a storeless editor (header links to
+  the site instead of the app). Clips are served from
   `http://localhost:8787/videos/dev-media/…` in place of `media.kedaipal.com`.
 - **`dev`** uses the app's development Clerk instance and dev Convex, so you sign
-  in with a dev account. It needs `adminAccess:mine` deployed on dev Convex
-  (Kedaipal/kedaipal#423) and your dev user id in its `BLOG_EDITOR_USER_IDS`.
+  in with a dev account. It needs `adminAccess:mine` — with `hasStore` — deployed
+  on dev Convex (Kedaipal/kedaipal#423) and your dev user id in its
+  `BLOG_EDITOR_USER_IDS`.
 
 ## Deploying (operator steps — ClickUp z8r3fdwwpk)
 

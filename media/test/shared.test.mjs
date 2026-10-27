@@ -15,6 +15,7 @@ import {
   pickFreeName,
   posterKey,
   videoKey,
+  wayOut,
 } from '../public/videos/lib/shared.js'
 
 // Verbatim from Kedaipal/kedaiblog#4 (js/sanity.js, parseVideoLink) — a clip link must pass it.
@@ -104,5 +105,20 @@ describe('formatting', () => {
     assert.equal(formatDuration(null), '—')
     assert.equal(formatBytes(1506372), '1.4 MB')
     assert.equal(formatBytes(2.5 * 1024 ** 3), '2.5 GB')
+  })
+})
+
+describe('wayOut — where the page’s way out points', () => {
+  it('someone with a store goes back to the app', () => {
+    assert.deepEqual(wayOut(true, 'https://kedaipal.com/app'), {href: 'https://kedaipal.com/app', label: 'Kedaipal app', menu: 'Go to the Kedaipal app'})
+  })
+  it('a storeless blog editor gets the site, never the app (it would send them to onboarding)', () => {
+    assert.deepEqual(wayOut(false, 'https://kedaipal.com/app'), {href: 'https://kedaipal.com', label: 'kedaipal.com', menu: 'Go to kedaipal.com'})
+  })
+  it('an unknown answer (older Convex) counts as no store', () => {
+    for (const v of [undefined, null, 'yes', 1]) assert.equal(wayOut(v, 'https://kedaipal.com/app').href, 'https://kedaipal.com')
+  })
+  it('follows the configured app host in local dev', () => {
+    assert.equal(wayOut(false, 'http://localhost:3000/app').href, 'http://localhost:3000')
   })
 })

@@ -91,6 +91,23 @@ export function clipLink(publicBase, key) {
   return `${String(publicBase).replace(/\/+$/, '')}/${key}`
 }
 
+/**
+ * Where the page's "way out" points. Someone with a store (owner or team
+ * member) goes back to the app. Someone without one would be sent by the app
+ * into "create your store" onboarding — a dead end for a blog editor — so they
+ * get the site's home instead. A missing `hasStore` (older Convex) counts as no.
+ */
+export function wayOut(hasStore, appUrl) {
+  if (hasStore === true) return {href: appUrl, label: 'Kedaipal app', menu: 'Go to the Kedaipal app'}
+  let home = 'https://kedaipal.com'
+  try {
+    home = new URL(appUrl).origin
+  } catch {
+    /* keep the default */
+  }
+  return {href: home, label: home.replace(/^https?:\/\//, ''), menu: `Go to ${home.replace(/^https?:\/\//, '')}`}
+}
+
 /** The Clerk Frontend API host encoded in a publishable key (pk_live_… / pk_test_…). */
 export function frontendApiFromKey(publishableKey) {
   const m = /^pk_(?:live|test)_([A-Za-z0-9+/=_-]+)$/.exec(String(publishableKey || ''))

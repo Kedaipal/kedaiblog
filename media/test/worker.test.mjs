@@ -12,6 +12,7 @@ import {ADMIN_ORIGIN, ISSUER, makeKey, signToken} from './helpers.mjs'
 
 const CONVEX = 'https://dev-deployment.convex.cloud'
 const AREAS = {user_writer: ['videos'], user_seller: []}
+const STORES = new Set(['user_seller']) // the writer is a storeless blog editor, like Kris
 const MONTH = monthFolder()
 
 let key, realFetch, bucket, convexDown, oembedStatus
@@ -34,7 +35,7 @@ before(async () => {
     if (url === `${CONVEX}/api/query`) {
       if (convexDown) return Response.json({status: 'error', errorMessage: 'boom'}, {status: 500})
       const sub = JSON.parse(Buffer.from(init.headers.authorization.slice(7).split('.')[1], 'base64url')).sub
-      return Response.json({status: 'success', value: {areas: AREAS[sub] ?? []}})
+      return Response.json({status: 'success', value: {areas: AREAS[sub] ?? [], hasStore: STORES.has(sub)}})
     }
     if (url.startsWith('https://www.youtube.com/oembed')) {
       return oembedStatus === 200 ? Response.json({title: 'Kedaipal Podcast #1', author_name: 'Kedaipal'}) : new Response('Unauthorized', {status: oembedStatus})
@@ -110,11 +111,14 @@ describe('the gate', () => {
   })
   it('/api/me tells a seller they are not allowed; every other endpoint is 403 and touches nothing', async () => {
     const token = await tokenFor('user_seller')
-    assert.deepEqual(await (await call('/videos/api/me', {token})).json(), {userId: 'user_seller', areas: [], allowed: false})
+    assert.deepEqual(await (await call('/videos/api/me', {token})).json(), {userId: 'user_seller', areas: [], allowed: false, hasStore: true})
     assert.equal((await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName: 'x.mp4', size: 10}})).status, 403)
     assert.equal((await call('/videos/api/youtube?url=https://youtu.be/dQw4w9WgXcQ', {token})).status, 403)
     assert.equal((await call('/videos/api/recent', {token})).status, 403)
     assert.equal(bucket.uploads.size + bucket.objects.size, 0)
+  })
+  it('/api/me tells a storeless blog editor they have no store, so the page links them to kedaipal.com', async () => {
+    assert.deepEqual(await (await call('/videos/api/me', {token: await tokenFor('user_writer')})).json(), {userId: 'user_writer', areas: ['videos'], allowed: true, hasStore: false})
   })
   it('a Convex failure is 503, never a pass', async () => {
     convexDown = true

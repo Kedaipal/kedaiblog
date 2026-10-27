@@ -18,7 +18,7 @@
  *   GET  /                             → 302 /videos
  *   GET  /videos, /videos/recent, /videos/sign-in   the page shell
  *   GET  /videos/config.js             public config (publishable key …)
- *   GET  /videos/api/me                {userId, areas, allowed}
+ *   GET  /videos/api/me                {userId, areas, allowed, hasStore}
  *   POST /videos/api/r2/create         reserve a never-overwritten key, start multipart
  *   PUT  /videos/api/r2/part?key&uploadId&n   one ≤ 10 MB part
  *   POST /videos/api/r2/complete       finish (refuses if the key appeared meanwhile)
@@ -30,7 +30,7 @@
  *                                      local bucket, standing in for media.kedaipal.com
  */
 import {AuthError, bearerToken, parseList, verifyClerkToken} from './clerk.js'
-import {AccessUnavailable, adminAreas} from './access.js'
+import {AccessUnavailable, adminAccess} from './access.js'
 import {checkYouTubeLink} from './youtube.js'
 import {
   CLIP_MAX_BYTES,
@@ -87,8 +87,8 @@ async function authorise(request, env) {
     return fail(401, 'signed-out', 'Your sign-in has expired. Reload the page to sign in again.')
   }
   try {
-    const areas = await adminAreas({convexUrl: env.CONVEX_URL, token, sub: claims.sub})
-    return {claims, areas}
+    const {areas, hasStore} = await adminAccess({convexUrl: env.CONVEX_URL, token, sub: claims.sub})
+    return {claims, areas, hasStore}
   } catch (err) {
     if (!(err instanceof AccessUnavailable)) throw err
     console.error(err.message)
@@ -307,7 +307,7 @@ export default {
         const auth = await authorise(request, env)
         if (auth instanceof Response) return auth
         const allowed = auth.areas.includes(VIDEOS_AREA)
-        if (pathname === '/videos/api/me' && method === 'GET') return json({userId: auth.claims.sub, areas: auth.areas, allowed})
+        if (pathname === '/videos/api/me' && method === 'GET') return json({userId: auth.claims.sub, areas: auth.areas, allowed, hasStore: auth.hasStore})
         if (!allowed) return fail(403, 'no-access', "You don't have admin access.")
         if (pathname === '/videos/api/r2/create' && method === 'POST') return r2Create(request, env, auth)
         if (pathname === '/videos/api/r2/part' && method === 'PUT') return r2Part(request, url, env)

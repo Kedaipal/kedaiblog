@@ -25,6 +25,7 @@ import {
   monthFolder,
   normaliseName,
   videoKey,
+  wayOut,
 } from './lib/shared.js'
 import {copyText, el, toast} from './lib/ui.js'
 import {parseYouTubeLink} from './lib/youtube.js'
@@ -67,7 +68,8 @@ const ICON = {
 /* ---------- state ---------- */
 
 const $view = document.getElementById('view')
-let me = null // {userId, areas, allowed}
+let me = null // {userId, areas, allowed, hasStore}
+let shownUser = null // the header's user, re-rendered once `me` says where "out" goes
 let current = null // the file being handled
 let getToken = async () => null // set at boot
 
@@ -200,22 +202,36 @@ function setNav(active) {
 
 /* ---------- header: user menu + way back to the app ---------- */
 
+/**
+ * The way out of the admin page: "Kedaipal app" for someone with a store; for
+ * someone without one (a blog editor like Kris), the app would only offer
+ * "create your store", so they get kedaipal.com. Unknown until /api/me answers.
+ */
+function exitLink() {
+  return wayOut(me?.hasStore, CONFIG.appUrl)
+}
+
 function renderUser(user) {
+  shownUser = user
   const right = document.getElementById('top-right')
   const btn = document.getElementById('user-btn')
   const menu = document.getElementById('user-menu')
-  document.getElementById('top-app').href = CONFIG.appUrl
+  const topApp = document.getElementById('top-app')
   if (!user) {
     right.hidden = true
     return
   }
+  const exit = exitLink()
+  topApp.href = exit.href
+  topApp.textContent = exit.label
+  topApp.hidden = !me // don't guess before we know whether they have a store
   const email = user.primaryEmailAddress?.emailAddress || ''
   const name = user.fullName || user.firstName || email
   const avatar = user.imageUrl ? el('img', {src: user.imageUrl, alt: ''}) : el('span', {class: 'initial', text: (name || '?')[0].toUpperCase()})
   btn.replaceChildren(avatar, el('span', {class: 'label', text: name}))
   menu.replaceChildren(
     el('div', {class: 'who-full'}, el('strong', {text: name}), email !== name ? email : ''),
-    el('a', {href: CONFIG.appUrl}, 'Go to the Kedaipal app'),
+    me ? el('a', {href: exit.href}, exit.menu) : null,
     el('button', {type: 'button', onclick: () => signOut()}, 'Sign out'),
     el('p', {class: 'hint', text: CONFIG.offline ? 'Offline dev mode — nobody is really signed in.' : 'Signing out here also signs you out of the app.'}),
   )
@@ -279,7 +295,7 @@ function noAccessView() {
       amber: true,
       title: "You don't have admin access",
       body: ['This page is for Kedaipal’s blog editors. If you write for the blog, ask Zaki to add your account.'],
-      actions: [el('a', {class: 'btn btn-primary', href: CONFIG.appUrl}, 'Go to the Kedaipal app')],
+      actions: [el('a', {class: 'btn btn-primary', href: exitLink().href}, exitLink().menu)],
       foot: [email ? `Signed in as ${email} · ` : '', el('button', {type: 'button', onclick: () => signOut()}, 'Use another account')],
     }),
   )
@@ -908,6 +924,7 @@ async function boot() {
     if (err.status === 401) return CONFIG.offline ? problemView('Offline token rejected', err.message) : location.replace('/videos/sign-in')
     return problemView('Could not check your access', err.code === 'access-unavailable' ? err.message : `Something went wrong (${err.message}).`)
   }
+  if (shownUser) renderUser(shownUser) // now the way out is known
   if (!me.allowed) return noAccessView()
   if (PATH === '/videos/recent') return recentView()
   uploadView()
