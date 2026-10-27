@@ -1,29 +1,94 @@
 /*
- * Small pure helpers shared by the browser (app.js), the Worker (src/) and the
- * tests. No DOM, no bindings.
+ * The rules of the page, as pure functions shared by the browser (app.js), the
+ * Worker (src/) and the tests. No DOM, no bindings.
+ *
+ * The Worker is the authority on names and keys: whatever the page shows, the
+ * key is recomputed server-side from the original file name, so a tampered
+ * request can never write outside videos/<yyyy-mm>/.
  */
 
-/** Stream refuses anything longer than this (set per upload as maxDurationSeconds). */
-export const STREAM_MAX_SECONDS = 3 * 60 * 60
+/** Clips up to and including this many seconds go to R2; longer ones to YouTube. */
+export const CLIP_MAX_SECONDS = 300
 
-/** Stream's own ceiling for a single upload. */
-export const STREAM_MAX_BYTES = 30 * 1024 ** 3
+/** Hard ceiling for a clip (bytes). */
+export const CLIP_MAX_BYTES = 2 * 1024 ** 3
 
-/** Stream video uids are 32 lowercase hex characters. */
-export const STREAM_UID_RE = /^[0-9a-f]{32}$/
+/** Multipart part size. Well under the 100 MB Worker request-body limit. */
+export const PART_SIZE = 10 * 1024 * 1024
+
+export const NAME_MAX = 60
 
 /** The permission area this page needs (Convex `adminAccess:mine` → areas). */
 export const VIDEOS_AREA = 'videos'
 
+/** Where long videos are uploaded (the Kedaipal channel; the writer switches to it there). */
+export const YOUTUBE_STUDIO_URL = 'https://studio.youtube.com'
+
 /**
- * The one link the page hands back — byte-for-byte what the Studio's Video
- * block accepts (Kedaipal/kedaiblog#4, `VIDEO_STREAM_RE` in js/sanity.js).
+ * The routing rule. ≤ 5 min → "clip" (R2), > 5 min → "youtube".
+ * A duration the browser could not read is "unknown" — the page refuses such a
+ * file for R2 (it won't play for readers either) and offers YouTube.
  */
-export function streamLink(customerCode, uid) {
-  return `https://customer-${customerCode}.cloudflarestream.com/${uid}/iframe`
+export function decideDestination(durationSeconds) {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 'unknown'
+  return durationSeconds <= CLIP_MAX_SECONDS ? 'clip' : 'youtube'
 }
-export function streamThumbnail(customerCode, uid) {
-  return `https://customer-${customerCode}.cloudflarestream.com/${uid}/thumbnails/thumbnail.jpg`
+
+/**
+ * File name → object name: lowercase, spaces/underscores → "-", only
+ * [a-z0-9-], extension dropped, runs of "-" collapsed, ≤ 60 chars, no
+ * leading/trailing "-". "video" when nothing survives.
+ */
+export function normaliseName(fileName) {
+  let base = String(fileName ?? '')
+  const dot = base.lastIndexOf('.')
+  if (dot > 0) base = base.slice(0, dot)
+  base = base
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, NAME_MAX)
+    .replace(/-+$/g, '')
+  return base || 'video'
+}
+
+/** "yyyy-mm" in Malaysian time, so the folder matches the writer's calendar. */
+export function monthFolder(date = new Date(), timeZone = 'Asia/Kuala_Lumpur') {
+  const parts = new Intl.DateTimeFormat('en-GB', {timeZone, year: 'numeric', month: '2-digit'})
+    .formatToParts(date)
+    .reduce((acc, p) => ((acc[p.type] = p.value), acc), {})
+  return `${parts.year}-${parts.month}`
+}
+
+export const videoKey = (month, name) => `videos/${month}/${name}.mp4`
+export const posterKey = (month, name) => `videos/${month}/${name}.jpg`
+
+/** Only keys the Worker itself would have generated are ever touched. */
+export const VIDEO_KEY_RE = /^videos\/\d{4}-\d{2}\/[a-z0-9][a-z0-9-]{0,59}\.mp4$/
+export const POSTER_KEY_RE = /^videos\/\d{4}-\d{2}\/[a-z0-9][a-z0-9-]{0,59}\.jpg$/
+
+/**
+ * Never overwrite: the first of name, name-2, name-3 … for which `exists`
+ * resolves false. Suffixing keeps the total within NAME_MAX.
+ */
+export async function pickFreeName(name, exists, limit = 100) {
+  if (!(await exists(name))) return {name, suffixed: false}
+  for (let n = 2; n <= limit; n++) {
+    const suffix = `-${n}`
+    const candidate = name.slice(0, NAME_MAX - suffix.length).replace(/-+$/g, '') + suffix
+    if (!(await exists(candidate))) return {name: candidate, suffixed: true}
+  }
+  throw new Error(`No free name for "${name}" after ${limit} tries`)
+}
+
+/**
+ * A clip's public link — byte-for-byte what the Studio's Video block accepts
+ * (Kedaipal/kedaiblog#4): https://media.kedaipal.com/videos/<yyyy-mm>/<name>.mp4
+ */
+export function clipLink(publicBase, key) {
+  return `${String(publicBase).replace(/\/+$/, '')}/${key}`
 }
 
 /** The Clerk Frontend API host encoded in a publishable key (pk_live_… / pk_test_…). */

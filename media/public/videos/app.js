@@ -1,44 +1,55 @@
 /*
- * admin.kedaipal.com/videos — every video goes to Cloudflare Stream.
+ * admin.kedaipal.com/videos — get a video into a blog post.
  *
- * Views (one at a time, in #view):
- *   loading → sign-in (Clerk, hosted here, sign-in only, always back to /videos)
- *           → no-access ("You don't have admin access" + Go to the Kedaipal app)
- *           → upload: idle → reading → ready → uploading → processing → done
- *                                     ↘ refused        ↘ error / cancelled
- *           → recent (last 20 Stream videos, copy links)
- *   plus: access-check-unavailable, not configured, Clerk failed to load.
+ * Two ways in on the main view:
+ *   A. Drop a video. The browser reads its length and applies the rule:
+ *        ≤ 5 min → clip on our own domain (R2): checks → upload → one link
+ *        > 5 min → YouTube: a short guide, then B
+ *      Any clip refusal, and the clip decision itself, also offer YouTube.
+ *   B. Paste a YouTube link. The Worker checks YouTube will let the blog
+ *      embed it, and hands back the clean link.
  *
- * The link is handed out only once Stream says readyToStream.
+ * Views (in #view): loading → sign-in → no-access / problem → upload / recent.
+ * The file panel inside "upload" walks: reading → decision | refused | youtube
+ * guide → uploading → done | error.
  */
+import {containerOf, probeFastStart, PROBE_BYTES} from './lib/mp4.js'
 import {
-  STREAM_MAX_BYTES,
-  STREAM_MAX_SECONDS,
+  CLIP_MAX_BYTES,
+  CLIP_MAX_SECONDS,
+  YOUTUBE_STUDIO_URL,
+  decideDestination,
   formatBytes,
   formatDuration,
   frontendApiFromKey,
+  monthFolder,
+  normaliseName,
+  videoKey,
 } from './lib/shared.js'
-import {tusUpload} from './lib/tus.js'
 import {copyText, el, toast} from './lib/ui.js'
+import {parseYouTubeLink} from './lib/youtube.js'
 
 const CONFIG = window.ADMIN_VIDEOS_CONFIG || {clerkPublishableKey: '', appUrl: 'https://kedaipal.com/app', missing: ['config']}
 const PATH = location.pathname.replace(/\/+$/, '') || '/videos'
 
+/* ---------- copy: what each state says ---------- */
+
 const MSG = {
-  rule: 'Every video goes to Cloudflare Stream, which plays it at the best quality each reader’s connection can take, so it keeps playing on weak mobile data. Any format a phone or camera records is fine.',
-  cost: (min) =>
-    `Stream bills about US$5 per 1,000 minutes stored each month, plus US$1 per 1,000 minutes watched${min ? ` — this one adds about ${min} minute${min === 1 ? '' : 's'} of storage` : ''}.`,
-  notVideo: "This doesn't look like a video file. Pick the video itself — MP4, MOV, M4V, MKV, WebM or AVI.",
-  tooLong: 'This video is longer than 3 hours, which is the most Stream takes in one upload. Split it into parts and upload each one.',
-  tooLarge: 'This file is over 30 GB, which is more than Stream accepts in one upload. Export it at 1080p or 720p and try again.',
-  noPreview: "Your browser can't preview this format. That's fine — Stream converts it.",
-  processing: 'Processing on Cloudflare…',
-  processingSub: 'A long video can take several minutes. You can close this page — the link will be under Recent once it is ready.',
-  gaveUp: 'The upload stopped after several retries. Check your connection and try again — Stream resumes where it can.',
+  rule: 'Clips up to 5 minutes are stored on our own domain, free and ad-free. Longer videos go on our YouTube channel, which adapts to every reader’s connection.',
+  whyClip: 'Under 5 minutes, so it is stored on our own domain: free, no ads, plays right inside the article.',
+  whyYouTube: 'Over 5 minutes, so it goes on our YouTube channel — it adapts to every reader’s connection, so a long video keeps playing on weak mobile data.',
+  whyChosenYouTube: 'You chose YouTube for this clip.',
+  decode: "This file won't play in browsers. Export it as <strong>MP4 (H.264 video, AAC audio)</strong> — in HandBrake: preset <em>Fast 720p30</em> (or 1080p30), tick <em>Web Optimized</em>. Or put it on YouTube instead, which takes any format.",
+  fastStart: 'This MP4 would only start playing after it has fully downloaded. Re-export with <strong>Web Optimized / fast start</strong> on (HandBrake: Summary → Web Optimized).',
+  mov: 'Clips are stored as MP4. Export this as MP4 — or put it on YouTube instead if you can’t re-export.',
+  movHint: 'MP4 means H.264 video + AAC audio — in HandBrake: preset <em>Fast 720p30</em> (or 1080p30), tick <em>Web Optimized</em>.',
+  tooLarge: 'Too large for a clip this length — export at 1080p or 720p.',
+  gaveUp: 'The upload stopped after several retries. Check your connection and try again — nothing was saved.',
   expired: 'Your sign-in has expired. Sign in again — the file is still on your computer.',
-  streamOff: 'Stream is not connected yet, so videos cannot be uploaded. Ask Zaki.',
-  streamFailed: 'Cloudflare could not process this video.',
-  playsOnBlog: 'Plays on blog.kedaipal.com only',
+  ytNotYouTube: "That's not a YouTube video link. Open the video on YouTube, press <strong>Share</strong> and copy the link it gives you.",
+  ytNotEmbeddable: "YouTube won't let this video play on other sites. In YouTube Studio open the video and set <strong>Visibility</strong> to Public or Unlisted, then <strong>Show more → tick Allow embedding</strong>. Save, and paste the link again.",
+  ytNotFound: 'YouTube can’t find this video. Check the link — or it may have been deleted.',
+  ytUnreachable: 'Couldn’t reach YouTube to check this video. The link looks right; you can paste it into the Studio, or try again in a minute.',
 }
 
 const ICON = {
@@ -49,16 +60,16 @@ const ICON = {
   check: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>',
   lock: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   upload: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1.5"/></svg>',
+  youtube: '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="4" fill="currentColor"/><path d="m10 9 5 3-5 3z" fill="#fff"/></svg>',
+  external: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>',
 }
-
-const VIDEO_EXT = /\.(mp4|m4v|mov|qt|mkv|webm|avi|wmv|flv|mpe?g|3gp|mts|m2ts|ts|ogv)$/i
 
 /* ---------- state ---------- */
 
 const $view = document.getElementById('view')
-let me = null // {userId, areas, allowed, streamConfigured}
+let me = null // {userId, areas, allowed}
 let current = null // the file being handled
-let getToken = async () => null // set once Clerk has loaded
+let getToken = async () => null // set at boot
 
 /* ---------- API ---------- */
 
@@ -82,6 +93,33 @@ async function api(method, path, body, {signal} = {}) {
   const data = await res.json().catch(() => null)
   if (!res.ok) throw new ApiError(res.status, data?.error || 'error', res.status === 401 ? MSG.expired : data?.message || `Request failed (${res.status})`)
   return data
+}
+
+/** PUT raw bytes with upload progress (fetch has none), authenticated. */
+async function putBytes(path, blob, {signal, onProgress} = {}) {
+  const token = await getToken()
+  if (!token) throw new ApiError(401, 'signed-out', MSG.expired)
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', path)
+    xhr.setRequestHeader('authorization', `Bearer ${token}`)
+    xhr.setRequestHeader('content-type', 'application/octet-stream')
+    xhr.upload.onprogress = (e) => onProgress?.(e.loaded)
+    xhr.onload = () => {
+      let data = null
+      try {
+        data = JSON.parse(xhr.responseText)
+      } catch {
+        /* not JSON */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data)
+      else reject(new ApiError(xhr.status, data?.error || 'error', xhr.status === 401 ? MSG.expired : data?.message || `Upload failed (${xhr.status})`))
+    }
+    xhr.onerror = () => reject(new ApiError(0, 'network', 'network error'))
+    xhr.onabort = () => reject(new DOMException('aborted', 'AbortError'))
+    signal?.addEventListener('abort', () => xhr.abort(), {once: true})
+    xhr.send(blob)
+  })
 }
 
 const sleep = (ms, signal) =>
@@ -113,6 +151,27 @@ function facts(items) {
   return list
 }
 
+function copyButton(text, label = 'Copy') {
+  return el('button', {
+    class: 'btn btn-primary btn-sm',
+    type: 'button',
+    html: `${ICON.copy}<span>${label}</span>`,
+    onclick: async () => toast((await copyText(text)) ? 'Link copied' : 'Could not copy — select the link and copy it by hand'),
+  })
+}
+
+function linkResult(link, hintHtml) {
+  const btn = copyButton(link)
+  return {
+    btn,
+    nodes: [
+      el('p', {class: 'result-label', text: 'Your link'}),
+      el('div', {class: 'linkbox'}, el('code', {text: link}), btn),
+      el('p', {class: 'paste-hint', html: hintHtml}),
+    ],
+  }
+}
+
 function gate({mark = ICON.lock, amber = false, title, body = [], actions = [], foot}) {
   return el(
     'div',
@@ -139,10 +198,6 @@ function setNav(active) {
   nav.querySelectorAll('a').forEach((a) => (a.dataset.nav === active ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')))
 }
 
-function signOutButton(label = 'Sign out') {
-  return el('button', {type: 'button', onclick: () => signOut()}, label)
-}
-
 /* ---------- header: user menu + way back to the app ---------- */
 
 function renderUser(user) {
@@ -154,7 +209,7 @@ function renderUser(user) {
     right.hidden = true
     return
   }
-  const email = user.primaryEmailAddress?.emailAddress || user.emailAddresses?.[0]?.emailAddress || ''
+  const email = user.primaryEmailAddress?.emailAddress || ''
   const name = user.fullName || user.firstName || email
   const avatar = user.imageUrl ? el('img', {src: user.imageUrl, alt: ''}) : el('span', {class: 'initial', text: (name || '?')[0].toUpperCase()})
   btn.replaceChildren(avatar, el('span', {class: 'label', text: name}))
@@ -162,7 +217,7 @@ function renderUser(user) {
     el('div', {class: 'who-full'}, el('strong', {text: name}), email !== name ? email : ''),
     el('a', {href: CONFIG.appUrl}, 'Go to the Kedaipal app'),
     el('button', {type: 'button', onclick: () => signOut()}, 'Sign out'),
-    el('p', {class: 'hint', text: 'Signing out here also signs you out of the app.'}),
+    el('p', {class: 'hint', text: CONFIG.offline ? 'Offline dev mode — nobody is really signed in.' : 'Signing out here also signs you out of the app.'}),
   )
   right.hidden = false
   btn.onclick = (e) => {
@@ -182,6 +237,7 @@ document.addEventListener('click', (e) => {
 
 async function signOut() {
   if (current?.controller) current.controller.abort()
+  if (CONFIG.offline) return location.reload()
   await window.Clerk?.signOut({redirectUrl: '/videos/sign-in'})
 }
 
@@ -198,13 +254,7 @@ function signInView() {
       el(
         'div',
         {class: 'signin-wrap'},
-        el(
-          'div',
-          {class: 'signin-head'},
-          el('span', {class: 'eyebrow', text: 'Kedaipal admin'}),
-          el('h1', {text: 'Sign in to upload videos'}),
-          el('p', {text: 'Use your Kedaipal account — the same one as the app.'}),
-        ),
+        el('div', {class: 'signin-head'}, el('span', {class: 'eyebrow', text: 'Kedaipal admin'}), el('h1', {text: 'Sign in to add videos'}), el('p', {text: 'Use your Kedaipal account — the same one as the app.'})),
         mount,
       ),
     ),
@@ -223,67 +273,146 @@ function signInView() {
 
 function noAccessView() {
   setNav(null)
-  const user = window.Clerk?.user
-  const email = user?.primaryEmailAddress?.emailAddress || ''
+  const email = window.Clerk?.user?.primaryEmailAddress?.emailAddress || CONFIG.offline?.email || ''
   show(
     gate({
       amber: true,
       title: "You don't have admin access",
       body: ['This page is for Kedaipal’s blog editors. If you write for the blog, ask Zaki to add your account.'],
       actions: [el('a', {class: 'btn btn-primary', href: CONFIG.appUrl}, 'Go to the Kedaipal app')],
-      foot: [email ? `Signed in as ${email} · ` : '', signOutButton('Use another account')],
+      foot: [email ? `Signed in as ${email} · ` : '', el('button', {type: 'button', onclick: () => signOut()}, 'Use another account')],
     }),
   )
 }
 
 function problemView(title, message, {retry = true} = {}) {
   setNav(null)
-  show(
-    gate({
-      amber: true,
-      mark: ICON.info,
-      title,
-      body: [message],
-      actions: retry ? [el('button', {class: 'btn btn-primary', type: 'button', onclick: () => location.reload()}, 'Try again')] : [],
-    }),
-  )
+  show(gate({amber: true, mark: ICON.info, title, body: [message], actions: retry ? [el('button', {class: 'btn btn-primary', type: 'button', onclick: () => location.reload()}, 'Try again')] : []}))
 }
 
-/* ---------- upload view ---------- */
+/* ---------- main view: two ways in ---------- */
 
 function uploadView() {
   setNav('upload')
-  const input = el('input', {type: 'file', accept: 'video/*,.mp4,.m4v,.mov,.mkv,.webm,.avi', hidden: true, onchange: () => chooseFile(input.files?.[0])})
+  const input = el('input', {type: 'file', accept: 'video/*,.mp4,.m4v,.mov', hidden: true, onchange: () => chooseFile(input.files?.[0])})
   const drop = el(
     'section',
-    {class: 'drop', id: 'drop', tabindex: '0', role: 'button', 'aria-label': 'Choose a video to upload', 'aria-describedby': 'rule', onclick: () => input.click(), onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), input.click())},
+    {
+      class: 'drop',
+      id: 'drop',
+      tabindex: '0',
+      role: 'button',
+      'aria-label': 'Choose a video',
+      'aria-describedby': 'rule',
+      onclick: () => input.click(),
+      onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), input.click()),
+    },
     el('div', {class: 'drop-icon', html: ICON.upload}),
     el('p', {class: 'drop-title', text: 'Drop a video here'}),
-    el('p', {class: 'drop-sub'}, 'or ', el('span', {class: 'link', text: 'choose a file'}), ' — any length up to 3 hours'),
+    el('p', {class: 'drop-sub'}, 'or ', el('span', {class: 'link', text: 'choose a file'}), ' — the page tells you where it goes'),
     input,
   )
   const panel = el('section', {class: 'panel', id: 'panel', hidden: true, 'aria-live': 'polite'})
-  const streamOff = me.streamConfigured ? null : el('div', {style: 'margin-top:1.5rem'}, notice('warn', MSG.streamOff))
   show(
     el(
       'div',
       {class: 'page'},
-      el('section', {class: 'section-head'}, el('span', {class: 'eyebrow', text: 'Blog video'}), el('h1', {text: 'Drop a video, get a link.'}), el('p', {class: 'lede', id: 'rule', text: MSG.rule})),
-      streamOff,
+      el('section', {class: 'section-head'}, el('span', {class: 'eyebrow', text: 'Blog video'}), el('h1', {text: 'Get a video into a post.'}), el('p', {class: 'lede', id: 'rule', text: MSG.rule})),
+      el('div', {class: 'routes'}, routeChip('clip', 'Up to 5 min', 'Stored on media.kedaipal.com'), routeChip('youtube', 'Longer', 'On our YouTube channel')),
       drop,
       panel,
-      el('p', {class: 'foot-note'}, 'The link appears once Cloudflare has finished processing the video. ', el('a', {href: '/videos/recent'}, 'Recent'), ' keeps every link.'),
+      youtubeCheckCard(),
+      el('p', {class: 'foot-note'}, 'Nothing is ever overwritten. ', el('a', {href: '/videos/recent'}, 'Recent clips'), ' keeps every clip link; YouTube videos are in ', el('a', {href: YOUTUBE_STUDIO_URL, target: '_blank', rel: 'noopener'}, 'YouTube Studio'), '.'),
     ),
   )
 }
 
+function routeChip(kind, title, sub) {
+  return el('div', {class: `route-chip route-chip--${kind}`}, el('span', {class: 'route-chip-mark', html: kind === 'youtube' ? ICON.youtube : ICON.file}), el('span', {}, el('strong', {text: title}), el('span', {text: sub})))
+}
+
+/* ---------- B. "Already on YouTube?" ---------- */
+
+function youtubeCheckCard() {
+  const field = el('input', {
+    class: 'yt-input',
+    id: 'yt-link',
+    type: 'url',
+    inputmode: 'url',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: 'https://www.youtube.com/watch?v=…',
+    'aria-describedby': 'yt-help',
+  })
+  const result = el('div', {class: 'yt-result', 'aria-live': 'polite'})
+  const button = el('button', {class: 'btn btn-primary', type: 'submit'}, 'Check link')
+  const form = el(
+    'form',
+    {class: 'yt-form', onsubmit: (e) => (e.preventDefault(), checkYouTube(field.value, result, button))},
+    el('label', {class: 'sr-only', for: 'yt-link', text: 'YouTube link'}),
+    field,
+    button,
+  )
+  return el(
+    'section',
+    {class: 'yt-card', id: 'yt-card'},
+    el('div', {class: 'yt-head'}, el('span', {class: 'yt-mark', html: ICON.youtube}), el('div', {}, el('h2', {text: 'Already on YouTube?'}), el('p', {id: 'yt-help', text: 'Paste its link — the page checks the blog is allowed to play it and gives you the link for the Studio.'}))),
+    form,
+    result,
+  )
+}
+
+async function checkYouTube(value, result, button) {
+  const parsed = parseYouTubeLink(value)
+  if (!parsed) {
+    result.replaceChildren(notice('error', MSG.ytNotYouTube))
+    return
+  }
+  button.disabled = true
+  result.replaceChildren(el('div', {class: 'status'}, el('span', {class: 'spinner', 'aria-hidden': 'true'}), el('div', {class: 'status-sub', text: 'Asking YouTube…'})))
+  try {
+    const res = await api('GET', `/videos/api/youtube?url=${encodeURIComponent(value.trim())}`)
+    renderYouTubeResult(result, res)
+  } catch (err) {
+    if (err.status === 401) return result.replaceChildren(notice('error', MSG.expired), el('div', {class: 'actions'}, el('a', {class: 'btn btn-accent', href: '/videos/sign-in'}, 'Sign in again')))
+    if (err.status === 403) return noAccessView()
+    result.replaceChildren(notice('error', err.message))
+  } finally {
+    button.disabled = false
+  }
+}
+
+function renderYouTubeResult(result, {status, video}) {
+  if (status === 'not-youtube') return result.replaceChildren(notice('error', MSG.ytNotYouTube))
+  if (status === 'not-embeddable') return result.replaceChildren(notice('error', MSG.ytNotEmbeddable), el('div', {class: 'actions'}, studioButton('Open YouTube Studio')))
+  if (status === 'not-found') return result.replaceChildren(notice('error', MSG.ytNotFound))
+  const {btn, nodes} = linkResult(video.link, 'Paste this into the Studio’s <strong>Video</strong> block (+ → Video).')
+  const card = el(
+    'div',
+    {class: `yt-video${video.short ? ' yt-video--short' : ''}`},
+    el('img', {src: video.thumbnail, alt: '', loading: 'lazy', onerror: (e) => e.target.remove()}),
+    el('div', {}, el('strong', {class: 'yt-title', text: video.title || 'YouTube video'}), video.channel ? el('span', {class: 'yt-channel', text: video.channel}) : null, video.short ? el('span', {class: 'pill pill--muted', text: 'Short · plays tall'}) : null),
+  )
+  result.replaceChildren(
+    status === 'ok' ? notice('ok', 'Good to go — the blog can play this video.') : notice('warn', MSG.ytUnreachable),
+    card,
+    ...nodes,
+  )
+  btn.focus()
+}
+
+function studioButton(label) {
+  return el('a', {class: 'btn btn-outline', href: YOUTUBE_STUDIO_URL, target: '_blank', rel: 'noopener', html: `<span>${label}</span>${ICON.external}`})
+}
+
+/* ---------- A. a dropped file ---------- */
+
 function panelRender(...children) {
   const panel = document.getElementById('panel')
-  const drop = document.getElementById('drop')
   if (!panel) return
   panel.replaceChildren(fileStrip(current.file), el('div', {class: 'panel-body'}, ...children.flat().filter(Boolean)))
   panel.hidden = false
-  drop.hidden = true
+  document.getElementById('drop').hidden = true
 }
 
 function fileStrip(file) {
@@ -300,43 +429,66 @@ function fileStrip(file) {
 function resetToIdle() {
   if (current?.controller) current.controller.abort()
   if (current?.objectUrl) URL.revokeObjectURL(current.objectUrl)
+  if (current?.posterUrl) URL.revokeObjectURL(current.posterUrl)
   current = null
   const panel = document.getElementById('panel')
-  const drop = document.getElementById('drop')
   if (!panel) return uploadView()
   panel.hidden = true
   panel.replaceChildren()
+  const drop = document.getElementById('drop')
   drop.hidden = false
   drop.querySelector('input').value = ''
   drop.focus({preventScroll: true})
 }
 
 function readMetadata(objectUrl) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const video = document.createElement('video')
     video.preload = 'metadata'
     video.muted = true
     video.playsInline = true
-    const done = (value) => {
+    const done = (fn) => {
       clearTimeout(timer)
       video.onloadedmetadata = video.onerror = null
-      resolve(value)
+      fn()
     }
-    const timer = setTimeout(() => done(null), 15000)
-    video.onloadedmetadata = () => {
-      const {duration, videoWidth, videoHeight} = video
-      if (!Number.isFinite(duration) || duration <= 0) return done(null)
-      // A frame for the preview box (not uploaded — Stream makes its own thumbnail).
-      video.currentTime = Math.min(1, duration * 0.1)
-      done({video, duration, width: videoWidth || null, height: videoHeight || null})
-    }
-    video.onerror = () => done(null)
+    const timer = setTimeout(() => done(() => reject(new Error('decode'))), 30000)
+    video.onloadedmetadata = () =>
+      done(() => {
+        const {duration, videoWidth, videoHeight} = video
+        if (!Number.isFinite(duration) || duration <= 0 || !videoWidth || !videoHeight) reject(new Error('decode'))
+        else resolve({video, duration, width: videoWidth, height: videoHeight})
+      })
+    video.onerror = () => done(() => reject(new Error('decode')))
     video.src = objectUrl
   })
 }
 
-function looksLikeVideo(file) {
-  return (file.type || '').startsWith('video/') || VIDEO_EXT.test(file.name)
+/** Seek to 2 s (or 10 % if shorter), draw to canvas, JPEG 0.85, ≤ 1280 wide. */
+function capturePoster(video, duration) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('decode')), 20000)
+    video.onseeked = () => {
+      video.onseeked = null
+      // A short timeout (not rAF, which pauses in a background tab) lets the
+      // decoder hand the seeked frame to the canvas.
+      setTimeout(() => {
+        clearTimeout(timer)
+        try {
+          const scale = Math.min(1, 1280 / video.videoWidth)
+          const canvas = document.createElement('canvas')
+          canvas.width = Math.round(video.videoWidth * scale)
+          canvas.height = Math.round(video.videoHeight * scale)
+          canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height)
+          canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('decode'))), 'image/jpeg', 0.85)
+        } catch {
+          reject(new Error('decode'))
+        }
+      }, 30)
+    }
+    video.onerror = () => (clearTimeout(timer), reject(new Error('decode')))
+    video.currentTime = Math.min(2, duration * 0.1)
+  })
 }
 
 async function chooseFile(file) {
@@ -345,38 +497,59 @@ async function chooseFile(file) {
   current = {file, objectUrl: URL.createObjectURL(file)}
   const mine = current
   panelRender(el('div', {class: 'status'}, el('span', {class: 'spinner', 'aria-hidden': 'true'}), el('div', {}, el('div', {class: 'status-text', text: 'Reading the video…'}), el('div', {class: 'status-sub', text: 'Nothing is uploaded until you confirm.'}))))
-  if (!looksLikeVideo(file)) return refused(MSG.notVideo, "That's not a video")
-  if (file.size > STREAM_MAX_BYTES) return refused(MSG.tooLarge, 'Too large for Stream')
-  const meta = await readMetadata(mine.objectUrl)
+
+  let meta
+  try {
+    meta = await readMetadata(mine.objectUrl)
+  } catch {
+    if (mine === current) refused('decode')
+    return
+  }
   if (mine !== current) return
   mine.meta = meta
-  if (meta && meta.duration > STREAM_MAX_SECONDS) return refused(MSG.tooLong, 'Longer than 3 hours')
-  readyView()
-}
+  mine.name = normaliseName(file.name)
+  if (decideDestination(meta.duration) === 'youtube') return youtubeGuide(false)
 
-function refused(message, title) {
-  const m = current.meta
-  panelRender(
-    el('p', {class: 'refused-title', text: title}),
-    notice('error', message),
-    m ? facts([['Duration', formatDuration(m.duration)], ['Size', formatBytes(current.file.size)]]) : null,
-    el('div', {class: 'actions'}, el('button', {class: 'btn btn-primary', type: 'button', onclick: () => resetToIdle()}, 'Pick another file')),
-  )
+  // A clip: it will be served as-is, so it has to be a web-ready MP4.
+  const head = await file.slice(0, PROBE_BYTES).arrayBuffer()
+  if (mine !== current) return
+  const container = containerOf(head)
+  if (container === 'mov') return refused('mov')
+  if (container !== 'mp4') return refused('decode')
+  if (file.size > CLIP_MAX_BYTES) return refused('tooLarge')
+  if (!probeFastStart(head).fastStart) return refused('fastStart')
+  try {
+    const poster = await capturePoster(meta.video, meta.duration)
+    if (mine !== current) return
+    mine.poster = poster
+    mine.posterUrl = URL.createObjectURL(poster)
+  } catch {
+    if (mine === current) refused('decode')
+    return
+  }
+  clipDecision()
 }
 
 function previewBox() {
   const box = el('div', {class: 'route-thumb'})
-  if (current.meta?.video) {
-    const v = current.meta.video
-    v.removeAttribute('controls')
-    box.append(v)
-  } else box.append(el('div', {class: 'thumb-note', text: MSG.noPreview}))
+  if (current.posterUrl) box.append(el('img', {src: current.posterUrl, alt: 'Poster frame'}))
+  else if (current.meta?.video) {
+    current.meta.video.removeAttribute('controls')
+    box.append(current.meta.video)
+  } else box.append(el('div', {class: 'thumb-note', text: 'No preview'}))
   return box
 }
 
-function readyView() {
+function metaFacts() {
   const m = current.meta
-  const minutes = m ? Math.max(1, Math.round(m.duration / 60)) : null
+  return facts([m ? ['Duration', formatDuration(m.duration)] : null, ['Size', formatBytes(current.file.size)], m ? ['Frame', `${m.width} × ${m.height}`] : null])
+}
+
+function youtubeButton(label = 'Put it on YouTube instead') {
+  return el('button', {class: 'btn btn-outline', type: 'button', onclick: () => youtubeGuide(true)}, label)
+}
+
+function clipDecision() {
   panelRender(
     el(
       'div',
@@ -385,24 +558,78 @@ function readyView() {
       el(
         'div',
         {},
-        el('div', {class: 'route-title'}, 'Ready for Stream', el('span', {class: 'pill pill--amber', text: 'per minute'})),
-        el('p', {class: 'route-why', text: 'Cloudflare converts it to several qualities and hands back one link for the Studio.'}),
-        facts([
-          ['Duration', m ? formatDuration(m.duration) : 'unknown until Stream reads it'],
-          ['Size', formatBytes(current.file.size)],
-          m?.width ? ['Frame', `${m.width} × ${m.height}`] : null,
-        ]),
-        el('p', {class: 'cost', text: MSG.cost(minutes)}),
+        el('div', {class: 'route-title'}, 'Clip', el('span', {class: 'arrow', text: '→'}), 'our domain', el('span', {class: 'pill', text: 'free'})),
+        el('p', {class: 'route-why', text: MSG.whyClip}),
+        metaFacts(),
+        el('p', {class: 'dest'}, 'Saved as ', el('code', {text: videoKey(monthFolder(), current.name)}), ' — if that name is taken it becomes ', el('code', {text: `${current.name}-2`}), '.'),
       ),
     ),
     el(
       'div',
       {class: 'actions'},
-      el('button', {class: 'btn btn-accent', type: 'button', disabled: !me.streamConfigured, onclick: () => startUpload()}, 'Upload to Stream'),
-      me.streamConfigured ? null : el('p', {class: 'hint', text: MSG.streamOff}),
+      el('button', {class: 'btn btn-accent', type: 'button', onclick: () => startUpload()}, 'Upload clip'),
+      youtubeButton(),
+      el('p', {class: 'hint', text: 'YouTube instead: for a clip that should also be on our channel.'}),
     ),
   )
 }
+
+function refused(reason) {
+  const titles = {decode: "Can't use this file as a clip", fastStart: 'Not a fast-start MP4', mov: 'MOV files are not stored as clips', tooLarge: 'Too large for a clip'}
+  const body = {
+    decode: notice('error', MSG.decode),
+    fastStart: notice('error', MSG.fastStart),
+    mov: notice('error', MSG.mov, MSG.movHint),
+    tooLarge: notice('error', MSG.tooLarge),
+  }[reason]
+  panelRender(
+    el('p', {class: 'refused-title', text: titles[reason]}),
+    body,
+    current.meta ? metaFacts() : null,
+    el('div', {class: 'actions'}, el('button', {class: 'btn btn-primary', type: 'button', onclick: () => resetToIdle()}, 'Pick another file'), youtubeButton()),
+  )
+}
+
+/** Long videos (and clips sent there by choice): the YouTube steps, then the check below. */
+function youtubeGuide(byChoice) {
+  const m = current.meta
+  panelRender(
+    el(
+      'div',
+      {class: 'route'},
+      previewBox(),
+      el(
+        'div',
+        {},
+        el('div', {class: 'route-title'}, byChoice ? 'Clip' : 'Long video', el('span', {class: 'arrow', text: '→'}), 'YouTube', el('span', {class: 'pill pill--yt', text: 'our channel'})),
+        el('p', {class: 'route-why', text: byChoice ? MSG.whyChosenYouTube : MSG.whyYouTube}),
+        m ? metaFacts() : facts([['Size', formatBytes(current.file.size)]]),
+      ),
+    ),
+    el(
+      'ol',
+      {class: 'steps'},
+      el('li', {html: 'Open <strong>YouTube Studio</strong> and switch to the <strong>Kedaipal</strong> channel (your picture, top right).'}),
+      el('li', {html: '<strong>Create → Upload videos</strong> and pick this same file. Audience: <strong>No, it’s not made for kids</strong>.'}),
+      el('li', {html: 'Visibility: <strong>Public</strong> for the podcast, <strong>Unlisted</strong> if it should only be seen from the blog. Leave <strong>Show more → Allow embedding</strong> ticked.'}),
+      el('li', {html: 'When YouTube has finished processing, copy the video’s link (<strong>Share</strong>) and paste it in <strong>Already on YouTube?</strong> below.'}),
+    ),
+    el(
+      'div',
+      {class: 'actions'},
+      studioButton('Open YouTube Studio'),
+      el('button', {class: 'btn btn-ghost', type: 'button', onclick: () => focusYouTubeField()}, 'I have the link'),
+    ),
+  )
+}
+
+function focusYouTubeField() {
+  const card = document.getElementById('yt-card')
+  card?.scrollIntoView({behavior: 'smooth', block: 'center'})
+  document.getElementById('yt-link')?.focus({preventScroll: true})
+}
+
+/* ----- uploading a clip ----- */
 
 function progressBlock() {
   const fill = el('span')
@@ -412,26 +639,28 @@ function progressBlock() {
   return {
     node: el('div', {class: 'progress'}, bar, el('div', {class: 'progress-meta'}, left, right)),
     set(pct, leftHtml, rightText) {
-      bar.classList.toggle('is-indeterminate', pct == null)
       if (pct != null) {
         fill.style.width = `${pct}%`
         bar.setAttribute('aria-valuenow', String(Math.round(pct)))
-      } else fill.style.width = ''
+      }
       left.innerHTML = leftHtml
       right.textContent = rightText
-    },
-    processing() {
-      bar.classList.add('is-processing')
     },
   }
 }
 
-function busyView({label, sub, onCancel, cancelLabel = 'Cancel'}) {
+function suffixNotice(created) {
+  if (!created?.suffixed) return null
+  return notice('warn', `Saved as <code>${created.name}</code> — <code>${created.wantedName}</code> was already taken, and nothing is ever overwritten.`)
+}
+
+function uploadingView(created, onCancel) {
   const p = progressBlock()
   panelRender(
-    el('div', {class: 'status'}, el('span', {class: 'spinner', 'aria-hidden': 'true'}), el('div', {}, el('div', {class: 'status-text', text: label}), el('div', {class: 'status-sub', text: sub}))),
+    el('div', {class: 'status'}, el('span', {class: 'spinner', 'aria-hidden': 'true'}), el('div', {}, el('div', {class: 'status-text', text: 'Uploading clip…'}), el('div', {class: 'status-sub', text: created ? `Saving as ${created.name}.mp4 — keep this tab open until it finishes.` : 'Preparing'}))),
     p.node,
-    onCancel ? el('div', {class: 'actions'}, el('button', {class: 'btn btn-outline', type: 'button', onclick: onCancel}, cancelLabel)) : null,
+    suffixNotice(created),
+    el('div', {class: 'actions'}, el('button', {class: 'btn btn-outline', type: 'button', onclick: onCancel}, 'Cancel')),
   )
   return p
 }
@@ -445,103 +674,85 @@ function errorView(message, {retry, signIn} = {}) {
       {class: 'actions'},
       signIn ? el('a', {class: 'btn btn-accent', href: '/videos/sign-in'}, 'Sign in again') : null,
       retry ? el('button', {class: 'btn btn-accent', type: 'button', onclick: retry}, 'Try again') : null,
-      el('button', {class: 'btn btn-outline', type: 'button', onclick: () => readyView()}, 'Back'),
+      el('button', {class: 'btn btn-outline', type: 'button', onclick: () => clipDecision()}, 'Back'),
     ),
   )
 }
 
-function doneView({link, thumbnail, duration, size}) {
-  const copyBtn = el('button', {
-    class: 'btn btn-primary btn-sm',
-    type: 'button',
-    html: `${ICON.copy}<span>Copy</span>`,
-    onclick: async () => toast((await copyText(link)) ? 'Link copied' : 'Could not copy — select the link and copy it by hand'),
-  })
-  const preview = thumbnail
-    ? el('div', {class: 'preview preview--thumb'}, el('img', {src: thumbnail, alt: 'Stream thumbnail', onerror: (e) => e.target.parentElement.remove()}), el('span', {class: 'play-note', text: MSG.playsOnBlog}))
-    : null
+function doneView({link, posterUrl, created}) {
+  const {btn, nodes} = linkResult(link, 'Paste this into the Studio’s <strong>Video</strong> block (+ → Video).')
   panelRender(
-    notice('ok', 'Ready. Cloudflare Stream has finished processing the video.'),
-    el('p', {class: 'result-label', style: 'margin-top:1.5rem', text: 'Your link'}),
-    el('div', {class: 'linkbox'}, el('code', {text: link}), copyBtn),
-    el('p', {class: 'paste-hint', html: 'Paste this into the Studio’s <strong>Video</strong> block (+ → Video).'}),
-    preview,
-    facts([
-      ['Duration', formatDuration(duration)],
-      ['Size', formatBytes(size)],
-      ['Thumbnail', 'Stream’s own, picked automatically'],
-    ]),
-    el('div', {class: 'actions'}, el('button', {class: 'btn btn-outline', type: 'button', onclick: () => resetToIdle()}, 'Upload another')),
+    notice('ok', 'Uploaded. The clip is live on media.kedaipal.com.'),
+    suffixNotice(created),
+    el('div', {style: 'margin-top:1.5rem'}, ...nodes),
+    el('div', {class: 'preview'}, el('video', {controls: true, playsinline: true, preload: 'metadata', poster: posterUrl || null, src: link})),
+    facts([['Duration', formatDuration(current.meta?.duration)], ['Size', formatBytes(current.file.size)], ['Poster', posterUrl ? 'captured automatically, same name .jpg' : 'not saved — the block can take one']]),
+    el('div', {class: 'actions'}, el('button', {class: 'btn btn-outline', type: 'button', onclick: () => resetToIdle()}, 'Add another video')),
   )
-  copyBtn.focus()
+  btn.focus()
 }
 
 async function startUpload() {
   const mine = current
-  const {file} = mine
+  const {file, meta, poster} = mine
   const controller = new AbortController()
   mine.controller = controller
   const {signal} = controller
   const cancel = () => controller.abort()
-
-  let uid
+  let created
   try {
-    busyView({label: 'Uploading to Stream…', sub: 'Asking Cloudflare for an upload slot', onCancel: cancel}).set(0, '<strong>0%</strong>', `0 B of ${formatBytes(file.size)}`)
-    const created = await api('POST', '/videos/api/uploads', {fileName: file.name, size: file.size}, {signal})
-    uid = created.uid
-    const up = busyView({label: 'Uploading to Stream…', sub: 'Straight from your computer to Cloudflare. Keep this tab open until it finishes.', onCancel: cancel})
-    const started = Date.now()
-    await tusUpload({
-      file,
-      uploadUrl: created.uploadURL,
-      signal,
-      onProgress: (sent, failures) => {
-        const pct = (sent / file.size) * 100
-        const secs = (Date.now() - started) / 1000
-        const eta = sent > 0 && secs > 3 ? ((file.size - sent) / (sent / secs)) : null
-        up.set(
-          pct,
-          `<strong>${Math.floor(pct)}%</strong>${failures ? ` · connection dropped, resumed ${failures}×` : ''}${eta != null && pct < 99.5 ? ` · about ${formatDuration(eta)} left` : ''}`,
-          `${formatBytes(sent)} of ${formatBytes(file.size)}`,
-        )
-      },
-    })
-
-    // Processing: Stream reports a percentage once it starts encoding; until then, elapsed time only.
-    const t0 = Date.now()
-    const proc = busyView({label: MSG.processing, sub: MSG.processingSub, onCancel: () => controller.abort(), cancelLabel: 'Stop watching'})
-    proc.processing()
-    let pct = null
-    const tick = () => proc.set(pct, `<strong>${formatDuration((Date.now() - t0) / 1000)}</strong> elapsed${pct != null ? ` · ${Math.floor(pct)}% encoded` : ''}`, `Stream id ${uid}`)
-    tick()
-    const timer = setInterval(tick, 1000)
-    let status
-    try {
-      for (;;) {
-        await sleep(5000, signal)
-        status = await api('GET', `/videos/api/uploads/status?uid=${uid}`, null, {signal})
-        if (status.readyToStream && status.link) break
-        if (status.state === 'error') throw new ApiError(422, 'stream-failed', `${MSG.streamFailed}${status.errorReasonText ? ` (${status.errorReasonText})` : ''}`)
-        pct = status.pctComplete
-        tick()
+    uploadingView(null, cancel).set(0, '<strong>0%</strong>', `0 B of ${formatBytes(file.size)}`)
+    created = await api('POST', '/videos/api/r2/create', {fileName: file.name, size: file.size, duration: meta.duration, width: meta.width, height: meta.height}, {signal})
+    const total = Math.ceil(file.size / created.partSize)
+    const ui = uploadingView(created, cancel)
+    const parts = []
+    let doneBytes = 0
+    const paint = (loaded, n) => {
+      const sent = Math.min(file.size, doneBytes + loaded)
+      const pct = (sent / file.size) * 100
+      ui.set(pct, `<strong>${Math.floor(pct)}%</strong> · part ${n} of ${total}`, `${formatBytes(sent)} of ${formatBytes(file.size)}`)
+    }
+    for (let n = 1; n <= total; n++) {
+      const blob = file.slice((n - 1) * created.partSize, Math.min(n * created.partSize, file.size))
+      for (let attempt = 0; ; ) {
+        try {
+          paint(0, n)
+          const q = `key=${encodeURIComponent(created.key)}&uploadId=${encodeURIComponent(created.uploadId)}&n=${n}`
+          const part = await putBytes(`/videos/api/r2/part?${q}`, blob, {signal, onProgress: (loaded) => paint(loaded, n)})
+          parts.push({partNumber: part.partNumber, etag: part.etag})
+          doneBytes += blob.size
+          break
+        } catch (err) {
+          if (err.name === 'AbortError' || (err.status >= 400 && err.status < 500)) throw err
+          if (++attempt > 3) throw new ApiError(0, 'gave-up', MSG.gaveUp)
+          ui.set(null, `<strong>Connection dropped</strong> · retrying part ${n} (attempt ${attempt} of 3)…`, '')
+          await sleep(1000 * 2 ** (attempt - 1), signal)
+        }
       }
-    } finally {
-      clearInterval(timer)
+    }
+    ui.set(100, '<strong>100%</strong> · finishing', formatBytes(file.size))
+    const completed = await api('POST', '/videos/api/r2/complete', {key: created.key, uploadId: created.uploadId, parts}, {signal})
+    let posterUrl = null
+    try {
+      posterUrl = (await putBytes(`/videos/api/r2/poster?key=${encodeURIComponent(created.posterKey)}`, poster, {signal})).url
+    } catch (err) {
+      if (err.name === 'AbortError') throw err
+      console.warn('poster upload failed', err) // the clip is up; a missing poster isn't worth failing it for
     }
     mine.controller = null
-    doneView({link: status.link, thumbnail: status.thumbnail, duration: status.duration ?? mine.meta?.duration, size: status.size ?? file.size})
+    doneView({link: completed.url, posterUrl, created})
   } catch (err) {
+    if (created) api('POST', '/videos/api/r2/abort', {key: created.key, uploadId: created.uploadId}).catch(() => {})
     mine.controller = null
     if (mine !== current) return
-    if (err.name === 'AbortError') return readyView()
+    if (err.name === 'AbortError') return clipDecision()
     if (err.status === 401) return errorView(MSG.expired, {signIn: true})
     if (err.status === 403) return noAccessView()
-    const message = err.code === 'stream-failed' ? err.message : err instanceof ApiError ? err.message : MSG.gaveUp
-    errorView(message, {retry: () => startUpload()})
+    errorView(err.message || MSG.gaveUp, {retry: () => startUpload()})
   }
 }
 
-/* drag & drop anywhere on the upload view */
+/* drag & drop anywhere on the main view */
 let dragDepth = 0
 document.addEventListener('dragenter', (e) => {
   if (!document.getElementById('drop') || !e.dataTransfer?.types?.includes('Files')) return
@@ -571,7 +782,7 @@ window.addEventListener('beforeunload', (e) => {
   }
 })
 
-/* ---------- recent view ---------- */
+/* ---------- recent clips ---------- */
 
 function dateLabel(d) {
   const date = new Date(d)
@@ -579,50 +790,47 @@ function dateLabel(d) {
   return new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Kuala_Lumpur', day: 'numeric', month: 'short', year: 'numeric'}).format(date)
 }
 
-function recentRow(v) {
-  const thumb = v.thumbnail ? el('img', {class: 'recent-thumb', src: v.thumbnail, alt: '', loading: 'lazy', width: '96', height: '54', onerror: (e) => e.target.replaceWith(el('div', {class: 'recent-thumb recent-thumb--empty', 'aria-hidden': 'true'}))}) : el('div', {class: 'recent-thumb recent-thumb--empty', 'aria-hidden': 'true'})
-  const pill = v.failed ? el('span', {class: 'pill pill--red', text: 'failed'}) : !v.ready ? el('span', {class: 'pill pill--muted', text: 'processing'}) : null
-  const usable = v.ready && v.link
+function recentRow(c) {
+  const empty = () => el('div', {class: 'recent-thumb recent-thumb--empty', 'aria-hidden': 'true'})
   return el(
     'li',
-    {class: `recent-row${usable ? '' : ' is-pending'}`},
-    thumb,
+    {class: 'recent-row'},
+    c.poster ? el('img', {class: 'recent-thumb', src: c.poster, alt: '', loading: 'lazy', width: '96', height: '54', onerror: (e) => e.target.replaceWith(empty())}) : empty(),
     el(
       'div',
       {class: 'recent-main'},
-      el('div', {class: 'recent-name', title: v.name}, v.name, pill ? ' ' : '', pill),
-      el('div', {class: 'recent-meta'}, v.duration ? el('span', {text: formatDuration(v.duration)}) : null, el('span', {text: dateLabel(v.created)}), v.mine ? el('span', {text: 'by you'}) : null),
-      usable ? el('span', {class: 'recent-link', text: v.link}) : el('span', {class: 'recent-link', text: v.failed ? 'Stream could not process this one' : 'Link appears once it is ready'}),
+      el('div', {class: 'recent-name', title: c.name, text: c.name}),
+      // Non-breaking inside each fact, so a narrow row only ever breaks after a "·".
+      el('div', {class: 'recent-meta'}, el('span', {text: [c.duration ? formatDuration(c.duration) : null, formatBytes(c.size), dateLabel(c.uploaded)].filter(Boolean).map((t) => t.replace(/ /g, '\u00a0')).join(' · ')})),
+      el('a', {class: 'recent-link', href: c.link, target: '_blank', rel: 'noopener', text: c.link}),
     ),
     el('button', {
       class: 'btn btn-ghost btn-copy',
       type: 'button',
-      disabled: !usable,
-      'aria-label': `Copy link for ${v.name}`,
+      'aria-label': `Copy link for ${c.name}`,
       html: `${ICON.copy}<span>Copy</span>`,
-      onclick: async () => toast((await copyText(v.link)) ? 'Link copied' : 'Could not copy — select the link and copy it by hand'),
+      onclick: async () => toast((await copyText(c.link)) ? 'Link copied' : 'Could not copy — select the link and copy it by hand'),
     }),
   )
 }
 
 async function recentView() {
   setNav('recent')
-  const body = el('div', {}, el('div', {class: 'empty-note'}, el('span', {class: 'spinner', style: 'display:inline-block;vertical-align:middle;margin-right:.5rem', 'aria-hidden': 'true'}), 'Loading…'))
+  const body = el('div', {}, el('div', {class: 'empty-note'}, el('span', {class: 'spinner spinner--inline', 'aria-hidden': 'true'}), 'Loading…'))
   show(
     el(
       'div',
       {class: 'page page--recent'},
-      el('section', {class: 'section-head'}, el('span', {class: 'eyebrow', text: 'Recent uploads'}), el('h1', {text: "Lost a link? It's here."}), el('p', {class: 'lede', text: 'The last 20 videos on Stream, newest first. Copy a link and paste it into the Studio’s Video block.'})),
+      el('section', {class: 'section-head'}, el('span', {class: 'eyebrow', text: 'Recent clips'}), el('h1', {text: "Lost a link? It's here."}), el('p', {class: 'lede', text: 'The last 20 clips stored on media.kedaipal.com, newest first. Copy a link and paste it into the Studio’s Video block.'})),
       el('section', {class: 'recent-group'}, body),
+      el('section', {class: 'recent-group'}, el('div', {class: 'yt-aside'}, el('span', {class: 'yt-mark', html: ICON.youtube}), el('p', {}, 'Long videos live on our YouTube channel — their links are in YouTube Studio under ', el('strong', {text: 'Content'}), '.'), studioButton('YouTube Studio'))),
     ),
   )
   try {
-    const data = await api('GET', '/videos/api/recent')
-    if (!data.streamConfigured) body.replaceChildren(el('p', {class: 'empty-note', text: MSG.streamOff}))
-    else if (!data.videos.length) body.replaceChildren(el('p', {class: 'empty-note'}, 'No videos yet. Drop one on the ', el('a', {href: '/videos'}, 'Videos page'), ' and it will show up here.'))
-    else body.replaceChildren(el('ul', {class: 'recent-list'}, ...data.videos.map(recentRow)))
+    const {clips} = await api('GET', '/videos/api/recent')
+    body.replaceChildren(clips.length ? el('ul', {class: 'recent-list'}, ...clips.map(recentRow)) : el('p', {class: 'empty-note'}, 'No clips yet. Drop a short MP4 on the ', el('a', {href: '/videos'}, 'Videos page'), ' and it will show up here.'))
   } catch (err) {
-    if (err.status === 401) return (location.href = '/videos/sign-in')
+    if (err.status === 401) return location.replace('/videos/sign-in')
     if (err.status === 403) return noAccessView()
     body.replaceChildren(el('p', {class: 'empty-note empty-note--error', text: `Could not load the list: ${err.message}`}))
   }
@@ -664,32 +872,40 @@ async function loadClerk() {
 
 async function boot() {
   if (CONFIG.missing?.length) return problemView('Not configured', `This page is deployed without ${CONFIG.missing.join(', ')}. Set them in media/wrangler.jsonc.`, {retry: false})
-  try {
-    await loadClerk()
-  } catch (err) {
-    console.error(err)
-    return problemView('Sign-in could not load', 'The Kedaipal sign-in did not load. Check your connection (or an ad blocker) and try again.')
-  }
-  const Clerk = window.Clerk
-  getToken = async () => (Clerk.session ? Clerk.session.getToken({template: 'convex'}) : null)
 
-  if (!Clerk.user) {
-    if (PATH !== '/videos/sign-in') return location.replace('/videos/sign-in')
-    return signInView()
+  if (CONFIG.offline) {
+    // `npm run dev:offline`: a locally minted token, verified by the Worker
+    // against a local mock issuer. Never present on a deployed page.
+    getToken = async () => CONFIG.offline.token
+    renderUser({fullName: CONFIG.offline.name, primaryEmailAddress: {emailAddress: CONFIG.offline.email}})
+    document.getElementById('offline-pill').hidden = false
+    if (PATH === '/videos/sign-in') return location.replace('/videos')
+  } else {
+    try {
+      await loadClerk()
+    } catch (err) {
+      console.error(err)
+      return problemView('Sign-in could not load', 'The Kedaipal sign-in did not load. Check your connection (or an ad blocker) and try again.')
+    }
+    const Clerk = window.Clerk
+    getToken = async () => (Clerk.session ? Clerk.session.getToken({template: 'convex'}) : null)
+    if (!Clerk.user) {
+      if (PATH !== '/videos/sign-in') return location.replace('/videos/sign-in')
+      return signInView()
+    }
+    if (PATH === '/videos/sign-in') return location.replace('/videos')
+    renderUser(Clerk.user)
+    // Signed out in another tab (or in the app) → back to sign-in.
+    Clerk.addListener(({user}) => {
+      if (!user && !current?.controller) location.replace('/videos/sign-in')
+    })
   }
-  if (PATH === '/videos/sign-in') return location.replace('/videos')
-
-  renderUser(Clerk.user)
-  // Signed out in another tab (or in the app) → back to sign-in.
-  Clerk.addListener(({user}) => {
-    if (!user && !current?.controller) location.replace('/videos/sign-in')
-  })
 
   loadingView('Checking your access…')
   try {
     me = await api('GET', '/videos/api/me')
   } catch (err) {
-    if (err.status === 401) return location.replace('/videos/sign-in')
+    if (err.status === 401) return CONFIG.offline ? problemView('Offline token rejected', err.message) : location.replace('/videos/sign-in')
     return problemView('Could not check your access', err.code === 'access-unavailable' ? err.message : `Something went wrong (${err.message}).`)
   }
   if (!me.allowed) return noAccessView()
@@ -698,13 +914,3 @@ async function boot() {
 }
 
 boot()
-
-// For poking at states in DevTools during local development; holds no secrets.
-window.__videos = {
-  get me() { return me },
-  set me(v) { me = v },
-  set getToken(fn) { getToken = fn },
-  get current() { return current },
-  views: {signInView, noAccessView, problemView, uploadView, recentView, loadingView, renderUser},
-  chooseFile,
-}

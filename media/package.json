@@ -2,10 +2,12 @@
   "name": "kedaipal-admin-videos",
   "private": true,
   "version": "1.0.0",
-  "description": "admin.kedaipal.com/videos — upload a blog video to Cloudflare Stream behind the Kedaipal app login",
+  "description": "admin.kedaipal.com/videos — blog clips to R2, long videos to YouTube, behind the Kedaipal app login",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --port 8787 --var CLERK_PUBLISHABLE_KEY:pk_test_bGlrZWQtaW1wYWxhLTguY2xlcmsuYWNjb3VudHMuZGV2JA --var CLERK_ISSUER:https://liked-impala-8.clerk.accounts.dev --var CLERK_AUTHORIZED_PARTIES:http://localhost:8787 --var CONVEX_URL:https://qualified-chihuahua-441.convex.cloud --var APP_URL:http://localhost:3000/app",
+    "dev": "wrangler dev --port 8787 --var CLERK_PUBLISHABLE_KEY:pk_test_bGlrZWQtaW1wYWxhLTguY2xlcmsuYWNjb3VudHMuZGV2JA --var CLERK_ISSUER:https://liked-impala-8.clerk.accounts.dev --var CLERK_AUTHORIZED_PARTIES:http://localhost:8787 --var CONVEX_URL:https://qualified-chihuahua-441.convex.cloud --var APP_URL:http://localhost:3000/app --var PUBLIC_MEDIA_BASE:http://localhost:8787/videos/dev-media --var SERVE_MEDIA:1",
+    "dev:offline": "node scripts/dev-offline.mjs",
+    "fixtures": "node scripts/make-fixtures.mjs",
     "test": "node --test \"test/*.test.mjs\""
   },
   "devDependencies": {

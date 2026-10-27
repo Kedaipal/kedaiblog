@@ -1,33 +1,29 @@
 /*
- * The Worker end to end, with the network stubbed: Clerk's JWKS, Convex's
- * query API and the Stream API all answer from here.
+ * The Worker end to end with the network stubbed (Clerk's JWKS, Convex's query
+ * API, YouTube oEmbed) and an in-memory R2 bucket.
  */
 import assert from 'node:assert/strict'
 import {after, before, beforeEach, describe, it} from 'node:test'
 import worker from '../src/worker.js'
 import {clearAccessCache} from '../src/access.js'
+import {monthFolder, PART_SIZE} from '../public/videos/lib/shared.js'
+import {FakeR2} from './fake-r2.mjs'
 import {ADMIN_ORIGIN, ISSUER, makeKey, signToken} from './helpers.mjs'
 
 const CONVEX = 'https://dev-deployment.convex.cloud'
-const UID = 'c0ffee00c0ffee00c0ffee00c0ffee00'
-const AREAS = {user_writer: ['videos'], user_seller: [], user_superadmin: ['videos', 'sellers']}
+const AREAS = {user_writer: ['videos'], user_seller: []}
+const MONTH = monthFolder()
 
-const env = {
+let key, realFetch, bucket, convexDown, oembedStatus
+const env = () => ({
   CLERK_PUBLISHABLE_KEY: 'pk_test_ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk',
   CLERK_ISSUER: ISSUER,
   CLERK_AUTHORIZED_PARTIES: ADMIN_ORIGIN,
   CONVEX_URL: CONVEX,
-  CF_ACCOUNT_ID: 'acct',
-  STREAM_CUSTOMER_CODE: 'abc123',
-  STREAM_ALLOWED_ORIGINS: 'blog.kedaipal.com',
-  STREAM_API_TOKEN: 'stream-token',
+  PUBLIC_MEDIA_BASE: 'https://media.kedaipal.com',
+  MEDIA: bucket,
   ASSETS: {fetch: async (req) => new Response(`asset:${new URL(req.url).pathname}`, {headers: {'content-type': 'text/html'}})},
-}
-
-let key
-let realFetch
-let streamCalls
-let convexDown = false
+})
 
 before(async () => {
   key = await makeKey('ins_1')
@@ -37,131 +33,186 @@ before(async () => {
     if (url === `${ISSUER}/.well-known/jwks.json`) return Response.json({keys: [key.jwk]})
     if (url === `${CONVEX}/api/query`) {
       if (convexDown) return Response.json({status: 'error', errorMessage: 'boom'}, {status: 500})
-      const token = init.headers.authorization.slice(7)
-      const sub = JSON.parse(Buffer.from(token.split('.')[1], 'base64url')).sub
+      const sub = JSON.parse(Buffer.from(init.headers.authorization.slice(7).split('.')[1], 'base64url')).sub
       return Response.json({status: 'success', value: {areas: AREAS[sub] ?? []}})
     }
-    if (url.startsWith('https://api.cloudflare.com/client/v4/accounts/acct/stream')) {
-      streamCalls.push({url, init})
-      if (init.method === 'POST') return new Response(null, {status: 201, headers: {Location: `https://upload.cloudflarestream.com/tus/${UID}`, 'stream-media-id': UID}})
-      if (url.endsWith(`/stream/${UID}`)) return Response.json({success: true, result: {uid: UID, readyToStream: true, status: {state: 'ready', pctComplete: '100.000000'}, duration: 2712.4, size: 812_000_000, input: {width: 1920, height: 1080}}})
-      return Response.json({success: true, result: [
-        {uid: UID, meta: {name: 'Episode 1.mov'}, creator: 'user_writer', readyToStream: true, duration: 2712.4, created: '2026-10-27T03:00:00Z', status: {state: 'ready'}},
-        {uid: 'b'.repeat(32), meta: {name: 'Clip.mp4'}, creator: 'user_superadmin', readyToStream: false, duration: -1, created: '2026-10-27T02:00:00Z', status: {state: 'inprogress'}},
-      ]})
+    if (url.startsWith('https://www.youtube.com/oembed')) {
+      return oembedStatus === 200 ? Response.json({title: 'Kedaipal Podcast #1', author_name: 'Kedaipal'}) : new Response('Unauthorized', {status: oembedStatus})
     }
     throw new Error(`unexpected fetch ${url}`)
   }
 })
 after(() => (globalThis.fetch = realFetch))
 beforeEach(() => {
-  streamCalls = []
+  bucket = new FakeR2()
   convexDown = false
+  oembedStatus = 200
   clearAccessCache()
 })
 
-const call = async (path, {method = 'GET', token, body, envOverride} = {}) =>
-  worker.fetch(
-    new Request(`https://admin.kedaipal.com${path}`, {
-      method,
-      headers: {...(token ? {Authorization: `Bearer ${token}`} : {}), ...(body ? {'content-type': 'application/json'} : {})},
-      body: body ? JSON.stringify(body) : undefined,
-    }),
-    {...env, ...envOverride},
-  )
 const tokenFor = (sub, claims = {}) => signToken(key, {now: Math.floor(Date.now() / 1000), claims: {sub, ...claims}})
+async function call(path, {method = 'GET', token, json, body, headers = {}, envOverride} = {}) {
+  const init = {method, headers: {...headers}}
+  if (token) init.headers.Authorization = `Bearer ${token}`
+  if (json) {
+    init.headers['content-type'] = 'application/json'
+    init.body = JSON.stringify(json)
+  } else if (body) {
+    init.body = body
+    init.headers['content-length'] = String(body.byteLength)
+  }
+  return worker.fetch(new Request(`https://admin.kedaipal.com${path}`, init), {...env(), ...envOverride})
+}
+
+/** Upload `bytes` as `fileName` through create → parts → complete; returns {created, completed}. */
+async function uploadClip(token, fileName, bytes) {
+  const created = await (await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName, size: bytes.byteLength, duration: 34.4, width: 1280, height: 720}})).json()
+  const parts = []
+  for (let n = 1, off = 0; off < bytes.byteLength; n++, off += created.partSize) {
+    const q = `key=${encodeURIComponent(created.key)}&uploadId=${created.uploadId}&n=${n}`
+    parts.push(await (await call(`/videos/api/r2/part?${q}`, {method: 'PUT', token, body: bytes.subarray(off, off + created.partSize)})).json())
+  }
+  const res = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, parts}})
+  return {created, res, completed: await res.json()}
+}
 
 describe('pages', () => {
-  it('/ redirects to /videos', async () => {
-    const res = await call('/')
-    assert.equal(res.status, 302)
-    assert.equal(res.headers.get('location'), 'https://admin.kedaipal.com/videos')
-  })
-  it('serves the same shell for /videos, /videos/recent and /videos/sign-in, never cached', async () => {
+  it('/ redirects to /videos; the shell serves /videos, /videos/recent, /videos/sign-in uncached', async () => {
+    const r = await call('/')
+    assert.equal(r.status, 302)
+    assert.equal(r.headers.get('location'), 'https://admin.kedaipal.com/videos')
     for (const p of ['/videos', '/videos/', '/videos/recent', '/videos/sign-in']) {
       const res = await call(p)
       assert.equal(await res.text(), 'asset:/videos/index.html', p)
       assert.equal(res.headers.get('cache-control'), 'no-store')
     }
   })
-  it('config.js carries only public values', async () => {
-    const text = await (await call('/videos/config.js')).text()
+  it('config.js carries public values only, and never an offline token on a real issuer', async () => {
+    const text = await (await call('/videos/config.js', {envOverride: {DEV_OFFLINE_TOKEN: 'leak-me'}})).text()
     assert.match(text, /clerkPublishableKey/)
-    assert.doesNotMatch(text, /stream-token/)
+    assert.doesNotMatch(text, /leak-me/)
+    const offline = await (await call('/videos/config.js', {envOverride: {DEV_OFFLINE_TOKEN: 'tok', CLERK_ISSUER: 'http://localhost:8790'}})).text()
+    assert.match(offline, /"offline":\{"token":"tok"/)
+  })
+  it('the dev media route only exists with SERVE_MEDIA=1', async () => {
+    bucket.put(`videos/${MONTH}/a.mp4`, new Uint8Array([1, 2, 3]), {httpMetadata: {contentType: 'video/mp4'}})
+    assert.equal((await call(`/videos/dev-media/videos/${MONTH}/a.mp4`)).status, 404)
   })
   it('anything outside /videos is a 404', async () => {
     assert.equal((await call('/wp-admin')).status, 404)
   })
 })
 
-describe('API gate', () => {
-  it('401 without a token, and with a token minted for another origin', async () => {
+describe('the gate', () => {
+  it('401 without a token, or with one minted for another origin', async () => {
     assert.equal((await call('/videos/api/me')).status, 401)
     assert.equal((await call('/videos/api/me', {token: await tokenFor('user_writer', {azp: 'https://kedaipal.com'})})).status, 401)
   })
-  it('/api/me tells a signed-in seller they are not allowed (no 403, so the page can say so)', async () => {
-    const res = await call('/videos/api/me', {token: await tokenFor('user_seller')})
-    assert.equal(res.status, 200)
-    assert.deepEqual(await res.json(), {userId: 'user_seller', areas: [], allowed: false, streamConfigured: true})
-  })
-  it('403 on every other endpoint without the videos area', async () => {
+  it('/api/me tells a seller they are not allowed; every other endpoint is 403 and touches nothing', async () => {
     const token = await tokenFor('user_seller')
-    assert.equal((await call('/videos/api/uploads', {method: 'POST', token, body: {fileName: 'x.mp4', size: 10}})).status, 403)
-    assert.equal((await call(`/videos/api/uploads/status?uid=${UID}`, {token})).status, 403)
+    assert.deepEqual(await (await call('/videos/api/me', {token})).json(), {userId: 'user_seller', areas: [], allowed: false})
+    assert.equal((await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName: 'x.mp4', size: 10}})).status, 403)
+    assert.equal((await call('/videos/api/youtube?url=https://youtu.be/dQw4w9WgXcQ', {token})).status, 403)
     assert.equal((await call('/videos/api/recent', {token})).status, 403)
-    assert.equal(streamCalls.length, 0, 'Stream must never be called for someone without access')
+    assert.equal(bucket.uploads.size + bucket.objects.size, 0)
   })
   it('a Convex failure is 503, never a pass', async () => {
     convexDown = true
-    const res = await call('/videos/api/recent', {token: await tokenFor('user_writer')})
+    const res = await call('/videos/api/r2/create', {method: 'POST', token: await tokenFor('user_writer'), json: {fileName: 'x.mp4', size: 10}})
     assert.equal(res.status, 503)
-    assert.equal((await res.json()).error, 'access-unavailable')
+    assert.equal(bucket.uploads.size, 0)
   })
-  it('503 when the Worker is deployed without its vars', async () => {
-    const res = await call('/videos/api/me', {token: await tokenFor('user_writer'), envOverride: {CONVEX_URL: ''}})
-    assert.equal(res.status, 503)
+  it('503 when deployed without its vars', async () => {
+    assert.equal((await call('/videos/api/me', {token: await tokenFor('user_writer'), envOverride: {PUBLIC_MEDIA_BASE: ''}})).status, 503)
   })
 })
 
-describe('Stream', () => {
-  it('creates a tus upload with the creator, 3 h limit and allowed origins', async () => {
-    const res = await call('/videos/api/uploads', {method: 'POST', token: await tokenFor('user_writer'), body: {fileName: 'Episode 1.mov', size: 812_000_000}})
+describe('clips on R2', () => {
+  it('multipart upload in 10 MB parts → one immutable object and the link the Video block takes', async () => {
+    const token = await tokenFor('user_writer')
+    const bytes = new Uint8Array(PART_SIZE * 2 + 1234).map((_, i) => i % 251)
+    const {created, res, completed} = await uploadClip(token, 'Kedaipal Demo (Final).mp4', bytes)
     assert.equal(res.status, 200)
-    assert.deepEqual(await res.json(), {uploadURL: `https://upload.cloudflarestream.com/tus/${UID}`, uid: UID})
-    const {url, init} = streamCalls[0]
-    assert.equal(url, 'https://api.cloudflare.com/client/v4/accounts/acct/stream?direct_user=true')
-    assert.equal(init.headers['Upload-Length'], '812000000')
-    assert.equal(init.headers['Upload-Creator'], 'user_writer')
-    assert.equal(init.headers.Authorization, 'Bearer stream-token')
-    const meta = Object.fromEntries(init.headers['Upload-Metadata'].split(',').map((p) => p.split(' ')).map(([k, v]) => [k, Buffer.from(v, 'base64').toString()]))
-    assert.deepEqual(meta, {name: 'Episode 1.mov', maxDurationSeconds: '10800', allowedorigins: 'blog.kedaipal.com'})
+    assert.equal(created.key, `videos/${MONTH}/kedaipal-demo-final.mp4`)
+    assert.equal(completed.url, `https://media.kedaipal.com/videos/${MONTH}/kedaipal-demo-final.mp4`)
+    const stored = await bucket.get(created.key)
+    assert.equal(stored.size, bytes.byteLength)
+    assert.deepEqual(stored.body, bytes)
+    assert.equal(stored.httpMetadata.contentType, 'video/mp4')
+    assert.equal(stored.httpMetadata.cacheControl, 'public, max-age=31536000, immutable')
+    assert.equal(stored.customMetadata.uploadedBy, 'user_writer')
+    assert.equal(stored.customMetadata.duration, '34.4')
   })
-  it('refuses bad requests before calling Stream', async () => {
+  it('the same name twice becomes -2, then -3; nothing is overwritten', async () => {
     const token = await tokenFor('user_writer')
-    assert.equal((await call('/videos/api/uploads', {method: 'POST', token, body: {fileName: '', size: 1}})).status, 400)
-    assert.equal((await call('/videos/api/uploads', {method: 'POST', token, body: {fileName: 'x', size: 31 * 1024 ** 3}})).status, 413)
-    assert.equal((await call('/videos/api/uploads/status?uid=../../etc', {token})).status, 400)
-    assert.equal(streamCalls.length, 0)
+    const a = await uploadClip(token, 'clip.mp4', new Uint8Array([1]))
+    const b = await uploadClip(token, 'clip.mp4', new Uint8Array([2]))
+    const c = await uploadClip(token, 'Clip.mp4', new Uint8Array([3]))
+    assert.deepEqual([a.created.name, b.created.name, c.created.name], ['clip', 'clip-2', 'clip-3'])
+    assert.deepEqual([b.created.suffixed, b.created.wantedName], [true, 'clip'])
+    assert.deepEqual((await bucket.get(`videos/${MONTH}/clip.mp4`)).body, new Uint8Array([1]))
   })
-  it('status hands back the link only in the shape the Video block accepts', async () => {
-    const data = await (await call(`/videos/api/uploads/status?uid=${UID}`, {token: await tokenFor('user_superadmin')})).json()
-    assert.equal(data.readyToStream, true)
-    assert.equal(data.link, `https://customer-abc123.cloudflarestream.com/${UID}/iframe`)
-    assert.equal(data.thumbnail, `https://customer-abc123.cloudflarestream.com/${UID}/thumbnails/thumbnail.jpg`)
-    assert.equal(data.pctComplete, 100)
-    assert.equal(data.duration, 2712.4)
-  })
-  it('recent marks the caller’s own uploads and pending ones', async () => {
-    const data = await (await call('/videos/api/recent', {token: await tokenFor('user_writer')})).json()
-    assert.equal(data.videos.length, 2)
-    assert.equal(data.videos[0].mine, true)
-    assert.equal(data.videos[1].mine, false)
-    assert.equal(data.videos[1].ready, false)
-    assert.equal(data.videos[1].duration, null)
-  })
-  it('without the token, uploads say Stream is off and recent is empty', async () => {
+  it('complete refuses — and aborts — if the key appeared while uploading', async () => {
     const token = await tokenFor('user_writer')
-    assert.equal((await call('/videos/api/uploads', {method: 'POST', token, body: {fileName: 'x', size: 1}, envOverride: {STREAM_API_TOKEN: ''}})).status, 503)
-    assert.deepEqual(await (await call('/videos/api/recent', {token, envOverride: {STREAM_API_TOKEN: ''}})).json(), {streamConfigured: false, videos: []})
+    const created = await (await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName: 'race.mp4', size: 1}})).json()
+    const part = await (await call(`/videos/api/r2/part?key=${encodeURIComponent(created.key)}&uploadId=${created.uploadId}&n=1`, {method: 'PUT', token, body: new Uint8Array([9])})).json()
+    await bucket.put(created.key, new Uint8Array([7])) // someone else got there first
+    const res = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, parts: [part]}})
+    assert.equal(res.status, 409)
+    assert.deepEqual((await bucket.get(created.key)).body, new Uint8Array([7]))
+    assert.equal(bucket.uploads.size, 0)
+  })
+  it('refuses keys it never issued, oversized parts and files over 2 GB', async () => {
+    const token = await tokenFor('user_writer')
+    assert.equal((await call('/videos/api/r2/part?key=videos/2026-10/../x.mp4&uploadId=u&n=1', {method: 'PUT', token, body: new Uint8Array([1])})).status, 400)
+    assert.equal((await call(`/videos/api/r2/part?key=videos/${MONTH}/a.mp4&uploadId=u&n=1`, {method: 'PUT', token, body: new Uint8Array(PART_SIZE + 2048)})).status, 413)
+    assert.equal((await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName: 'big.mp4', size: 3 * 1024 ** 3}})).status, 413)
+  })
+  it('a poster goes beside its clip, once, and never on its own', async () => {
+    const token = await tokenFor('user_writer')
+    const {created} = await uploadClip(token, 'with-poster.mp4', new Uint8Array([1, 2]))
+    const jpg = new Uint8Array([0xff, 0xd8, 0xff])
+    const ok = await call(`/videos/api/r2/poster?key=${encodeURIComponent(created.posterKey)}`, {method: 'PUT', token, body: jpg})
+    assert.equal(ok.status, 200)
+    assert.equal((await bucket.head(created.posterKey)).httpMetadata.contentType, 'image/jpeg')
+    assert.equal((await call(`/videos/api/r2/poster?key=${encodeURIComponent(created.posterKey)}`, {method: 'PUT', token, body: jpg})).status, 409)
+    assert.equal((await call(`/videos/api/r2/poster?key=videos/${MONTH}/orphan.jpg`, {method: 'PUT', token, body: jpg})).status, 409)
+  })
+  it('abort discards the parts', async () => {
+    const token = await tokenFor('user_writer')
+    const created = await (await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName: 'gone.mp4', size: 1}})).json()
+    assert.equal(bucket.uploads.size, 1)
+    assert.equal((await call('/videos/api/r2/abort', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId}})).status, 200)
+    assert.equal(bucket.uploads.size, 0)
+    assert.equal(await bucket.head(created.key), null)
+  })
+  it('recent lists our clips newest first with their posters, and skips the smoke file', async () => {
+    const token = await tokenFor('user_writer')
+    await bucket.put('videos/_test/smoke.mp4', new Uint8Array([1]))
+    await uploadClip(token, 'first.mp4', new Uint8Array([1]))
+    const {created} = await uploadClip(token, 'second.mp4', new Uint8Array([1, 2]))
+    await call(`/videos/api/r2/poster?key=${encodeURIComponent(created.posterKey)}`, {method: 'PUT', token, body: new Uint8Array([0xff])})
+    const {clips} = await (await call('/videos/api/recent', {token})).json()
+    assert.deepEqual(clips.map((c) => c.name), [`${MONTH}/second`, `${MONTH}/first`])
+    assert.equal(clips[0].poster, `https://media.kedaipal.com/videos/${MONTH}/second.jpg`)
+    assert.equal(clips[1].poster, null)
+    assert.equal(clips[0].duration, 34.4)
+  })
+})
+
+describe('YouTube link check', () => {
+  const ask = async (link) => (await call(`/videos/api/youtube?url=${encodeURIComponent(link)}`, {token: await tokenFor('user_writer')})).json()
+  it('ok → title, channel and the canonical link', async () => {
+    const res = await ask('https://youtu.be/dQw4w9WgXcQ?si=abc')
+    assert.equal(res.status, 'ok')
+    assert.equal(res.video.link, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+    assert.equal(res.video.title, 'Kedaipal Podcast #1')
+  })
+  it('embedding off / private, not found, not YouTube', async () => {
+    oembedStatus = 401
+    assert.equal((await ask('https://youtu.be/dQw4w9WgXcQ')).status, 'not-embeddable')
+    oembedStatus = 404
+    assert.equal((await ask('https://youtu.be/dQw4w9WgXcQ')).status, 'not-found')
+    assert.equal((await ask('https://vimeo.com/1')).status, 'not-youtube')
   })
 })
