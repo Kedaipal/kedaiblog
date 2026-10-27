@@ -52,7 +52,7 @@ window.Blog = (function () {
           ${CARD},
           articleImage${IMAGE},
           articleImageMobile${IMAGE},
-          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}, _type == "gallery" => {caption, "images": images[]${IMAGE.slice(0, -1)}, caption}}}
+          body[]{..., _type == "image" => ${IMAGE.slice(0, -1)}, caption}, _type == "audio" => {"src": file.asset->url}, _type == "gallery" => {caption, "images": images[]${IMAGE.slice(0, -1)}, caption}}, _type == "video" => {link, aspect, title, caption, "poster": poster{crop, hotspot, asset->{url, metadata{dimensions}}}}}
         },
         "others": *[_type == "post" && slug.current != $slug && publishedAt <= now()] | order(publishedAt desc)[0...12]{${CARD}}
       }`, { slug });
@@ -363,6 +363,162 @@ window.Blog = (function () {
     });
   }
 
+  // ---------- Video (clip on R2, YouTube, or Cloudflare Stream) ----------
+
+  // The ONLY link shapes a Video block accepts. Clips up to 5 minutes are uploaded at
+  // admin.kedaipal.com/videos and stored on R2 (media.kedaipal.com); long videos live on
+  // the Kedaipal YouTube channel. Stream is dormant (no account) but still parsed, so
+  // nothing published ever breaks if it returns. The Studio input (studio/schemaTypes/VideoLinkInput.jsx) copies
+  // these two regexes VERBATIM so the Studio refuses exactly what the site skips;
+  // change them in both places together.
+  //   Clip:   https://media.kedaipal.com/videos/<folder>/<name>.mp4   (folder is yyyy-mm; _test for smoke files)
+  //   YouTube: watch?v=, youtu.be/, /shorts/, /live/, /embed/, m.youtube.com, youtube-nocookie embed.
+  //           The same regex is in media/public/videos/lib/youtube.js (the admin page).
+  //           Only the 11-character id is ever used; the rest of the stored link is ignored.
+  //   Stream: https://customer-<code>.cloudflarestream.com/<uid>/iframe, …/<uid>/watch, or a bare 32-hex uid.
+  //           The customer code is captured only so the Studio can preview a thumbnail;
+  //           the site rebuilds the player URL from the uid + STREAM_CUSTOMER_CODE.
+  const VIDEO_FILE_RE = /^https:\/\/media\.kedaipal\.com\/videos\/([A-Za-z0-9_-]+)\/([A-Za-z0-9][A-Za-z0-9._-]*\.mp4)$/;
+  const VIDEO_YOUTUBE_RE = /^https:\/\/(?:(?:www\.|m\.)?youtube\.com\/(?:watch\?(?:[^#\s]*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/|www\.youtube-nocookie\.com\/embed\/)([A-Za-z0-9_-]{11})(?=$|[?&#/])\S*$/;
+  const VIDEO_STREAM_RE = /^(?:https:\/\/(customer-[a-z0-9]+)\.cloudflarestream\.com\/([0-9a-f]{32})\/(?:iframe|watch)\/?(?:\?[^\s#]*)?|([0-9a-f]{32}))$/;
+
+  const streamHost = () => (window.STREAM_CUSTOMER_CODE ? `https://customer-${window.STREAM_CUSTOMER_CODE}.cloudflarestream.com` : '');
+
+  // → {kind: 'file', src, poster} | {kind: 'youtube', id, short, poster}
+  //   | {kind: 'stream', uid, src, poster} | null.
+  // For Stream, src/poster are null until STREAM_CUSTOMER_CODE is set in js/config.js.
+  function parseVideoLink(link) {
+    const s = String(link ?? '').trim();
+    let m = VIDEO_FILE_RE.exec(s);
+    if (m) return { kind: 'file', src: s, poster: s.replace(/\.mp4$/, '.jpg'), name: m[2] };
+    m = VIDEO_YOUTUBE_RE.exec(s);
+    // embed/videoseries?list=… is a playlist, not an 11-character video id
+    if (m && m[1] !== 'videoseries') return { kind: 'youtube', id: m[1], short: /^https:\/\/(?:www\.|m\.)?youtube\.com\/shorts\//.test(s), poster: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` };
+    m = VIDEO_STREAM_RE.exec(s);
+    if (m) {
+      const uid = m[2] || m[3];
+      const host = streamHost();
+      return {
+        kind: 'stream',
+        uid,
+        src: host ? `${host}/${uid}/iframe?preload=metadata` : null,
+        poster: host ? `${host}/${uid}/thumbnails/thumbnail.jpg` : null,
+      };
+    }
+    return null;
+  }
+
+  // "W/H" string (the block's aspect, written by the Studio) → "W / H" for CSS, else null
+  function aspectCss(value) {
+    const m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(String(value ?? ''));
+    const w = Number(m?.[1]), h = Number(m?.[2]);
+    return w > 0 && h > 0 ? `${w} / ${h}` : null;
+  }
+
+  // A poster override, cut by the Sanity CDN to the frame's exact shape (honouring the
+  // Studio's crop and hotspot), so it covers the frame edge to edge. A <video>'s poster
+  // follows the video's object-fit, which stays `contain` so the clip itself is never
+  // cropped; serving the poster at the frame's shape gives the cover look in every browser.
+  function posterFor(img, aspect) {
+    if (!has(img)) return null;
+    const [aw, ah] = aspect.split(' / ').map(Number);
+    const w = aw >= ah ? 1344 : Math.round((1344 * aw) / ah);
+    const h = aw >= ah ? Math.round((1344 * ah) / aw) : 1344;
+    return imageUrl(img, w, h);
+  }
+
+  // The box is sized by --aspect before any media loads, so the article never jumps.
+  // The frame always takes the VIDEO's shape: the clip's own aspect (read from its file by
+  // the Studio), else 9:16 for a YouTube Short, else 16:9. A poster override never sets
+  // it; the poster is cut to the frame's shape instead (see posterFor).
+  // Clips play in a plain <video>; long videos in Cloudflare Stream's adaptive iframe.
+  // Deliberately no autoplay, muted or loop — it's an article, not a feed.
+  function videoPlayer(b) {
+    const v = parseVideoLink(b.link);
+    if (!v) return '';
+    if (v.kind === 'stream' && !v.src) {
+      console.warn('Video block skipped: set STREAM_CUSTOMER_CODE in js/config.js to play Cloudflare Stream videos.');
+      return '';
+    }
+    const aspect = aspectCss(b.aspect) || (v.short ? '9 / 16' : '16 / 9');
+    const custom = posterFor(b.poster, aspect);
+    const poster = custom || v.poster;
+    const title = b.title?.trim();
+    const caption = b.caption?.trim();
+    let player;
+    if (v.kind === 'file') {
+      player = `<video controls playsinline preload="metadata" src="${esc(v.src)}" poster="${esc(poster)}"${title ? ` title="${esc(title)}"` : ''}></video>`;
+    } else if (v.kind === 'youtube') {
+      // Click-to-load: nothing from YouTube (script, cookies) loads until the reader
+      // presses play; initVideo() swaps this button for the embed. The thumbnail comes
+      // from YouTube's image CDN (i.ytimg.com), which sets no cookies.
+      // Full-size 16:9 thumbnail (1280 × 720); initVideo() falls back to the 480 × 360 one,
+      // which every video has, when YouTube has no full-size version.
+      const label = `Play: ${title || 'video'}`;
+      const thumb = custom || `https://i.ytimg.com/vi/${v.id}/maxresdefault.jpg`;
+      player = `<button class="video-facade" type="button" data-yt="${esc(v.id)}" data-title="${esc(title || '')}" aria-label="${esc(label)}">`
+        + `<img src="${esc(thumb)}"${custom ? '' : ` data-fallback="${esc(v.poster)}"`} alt="" loading="lazy" decoding="async" />`
+        + `<span class="video-facade-play" aria-hidden="true">${ICON_PLAY}</span>`
+        + `<span class="video-facade-source" aria-hidden="true">Plays from YouTube</span></button>`;
+    } else {
+      const src = custom ? `${v.src}&poster=${encodeURIComponent(custom)}` : v.src;
+      player = `<iframe src="${esc(src)}" title="${esc(title || 'Video')}" loading="lazy"`
+        + ` allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+    }
+    const figcaption = title || caption
+      ? `<figcaption>${title ? `<strong>${esc(title)}</strong>` : ''}${title && caption ? ' ' : ''}${caption ? esc(caption).replace(/\n/g, '<br />') : ''}</figcaption>`
+      : '';
+    // Portrait clips are capped by height on wide screens (see styles.css) instead of
+    // filling the column as a tall black tower
+    const [aw, ah] = aspect.split(' / ').map(Number);
+    const portrait = ah > aw ? ' video--portrait' : '';
+    return `
+      <figure class="video video--${v.kind}${portrait}" style="--aspect: ${aspect}">
+        <div class="video-frame">${player}</div>
+        ${figcaption}
+      </figure>`;
+  }
+
+  const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+  // The only YouTube URL the site ever loads: rebuilt from the id, never the stored link.
+  // youtube-nocookie keeps cookies off until the reader interacts with the player.
+  function youtubeEmbedSrc(id) {
+    if (!YOUTUBE_ID_RE.test(id)) return null;
+    return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&playsinline=1`;
+  }
+
+  // Swaps each YouTube facade for the real player when it is clicked.
+  function initVideo(root = document) {
+    // A missing full-size thumbnail comes back as YouTube's 120 × 90 grey placeholder
+    root.querySelectorAll('.video-facade img[data-fallback]').forEach(img => {
+      const fallback = () => {
+        if (img.dataset.fallback && (!img.naturalWidth || img.naturalWidth <= 120)) {
+          img.src = img.dataset.fallback;
+          delete img.dataset.fallback;
+        }
+      };
+      if (img.complete) fallback();
+      img.addEventListener('load', fallback);
+      img.addEventListener('error', fallback);
+    });
+    root.querySelectorAll('.video-facade[data-yt]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const src = youtubeEmbedSrc(btn.dataset.yt);
+        if (!src) return;
+        const iframe = document.createElement('iframe');
+        iframe.src = src;
+        iframe.title = btn.dataset.title || 'YouTube video';
+        iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+        // YouTube refuses embeds that send no referrer (error 153)
+        iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+        iframe.allowFullscreen = true;
+        btn.replaceWith(iframe);
+        iframe.focus();
+      }, { once: true });
+    });
+  }
+
   // ---------- Portable Text → HTML ----------
 
   function blocksToText(blocks = []) {
@@ -411,11 +567,13 @@ window.Blog = (function () {
         out += audioPlayer(b);
       } else if (b._type === 'gallery' && b.images?.length) {
         out += gallery(b);
+      } else if (b._type === 'video') {
+        out += videoPlayer(b); // unknown link shapes render nothing
       }
     }
     closeList();
     return out;
   }
 
-  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, initAudio, initGallery };
+  return { live, getIndex, getPost, esc, formatDate, readTime, postUrl, cover, articleCover, avatar, card, portableText, parseVideoLink, videoPlayer, youtubeEmbedSrc, initAudio, initGallery, initVideo };
 })();
