@@ -10,16 +10,16 @@
  *   400  → not a URL oEmbed understands
  * The call runs in the Worker: the browser can't read that endpoint (no CORS).
  */
-import {parseYouTubeLink} from '../public/videos/lib/youtube.js'
+import {isYouTubePlaylist, parseYouTubeLink} from '../public/videos/lib/youtube.js'
 
 export const OEMBED = 'https://www.youtube.com/oembed'
 
 /**
- * @returns {Promise<{status: 'ok'|'not-embeddable'|'not-found'|'not-youtube'|'unreachable', video?: object}>}
+ * @returns {Promise<{status: 'ok'|'not-embeddable'|'not-found'|'playlist'|'not-youtube'|'unreachable', video?: object}>}
  */
 export async function checkYouTubeLink(input, {fetchImpl = fetch} = {}) {
   const parsed = parseYouTubeLink(input)
-  if (!parsed) return {status: 'not-youtube'}
+  if (!parsed) return {status: isYouTubePlaylist(input) ? 'playlist' : 'not-youtube'}
   const base = {id: parsed.id, link: parsed.canonical, short: parsed.short, thumbnail: parsed.thumbnail}
 
   let res

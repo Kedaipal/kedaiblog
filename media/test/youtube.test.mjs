@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {describe, it} from 'node:test'
-import {VIDEO_YOUTUBE_RE, parseYouTubeLink} from '../public/videos/lib/youtube.js'
+import {VIDEO_YOUTUBE_RE, isYouTubePlaylist, parseYouTubeLink} from '../public/videos/lib/youtube.js'
 import {checkYouTubeLink} from '../src/youtube.js'
 
 // The exact source shared with the Video block (ClickUp z8r3fdwwpp, Kedaipal/kedaiblog#4).
@@ -43,6 +43,32 @@ describe('VIDEO_YOUTUBE_RE', () => {
   })
 })
 
+describe('playlists and Shorts — the same rules as PR #4', () => {
+  it('embed/videoseries passes the shared regex but is a playlist, so it is refused', () => {
+    const link = 'https://www.youtube.com/embed/videoseries?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'
+    assert.ok(VIDEO_YOUTUBE_RE.test(link), 'the regex itself still matches it — the refusal is in the parser')
+    assert.equal(parseYouTubeLink(link), null)
+    assert.equal(isYouTubePlaylist(link), true)
+  })
+  it('a video inside a playlist is still that one video', () => {
+    assert.equal(parseYouTubeLink(`https://www.youtube.com/watch?v=${ID}&list=PL123&index=2`)?.id, ID)
+  })
+  it('playlist-only links are recognised as playlists; ordinary bad links are not', () => {
+    for (const link of ['https://www.youtube.com/playlist?list=PL1', 'https://www.youtube.com/watch?list=PL1', 'https://youtu.be/?list=PL1']) {
+      assert.equal(parseYouTubeLink(link), null, link)
+      assert.equal(isYouTubePlaylist(link), true, link)
+    }
+    assert.equal(isYouTubePlaylist('https://vimeo.com/1?list=x'), false)
+    assert.equal(isYouTubePlaylist('https://www.youtube.com/channel/UCxyz'), false)
+  })
+  it('a Short is decided by its path, not by "/shorts/" anywhere in the link', () => {
+    assert.equal(parseYouTubeLink(`https://www.youtube.com/shorts/${ID}`).short, true)
+    assert.equal(parseYouTubeLink(`https://m.youtube.com/shorts/${ID}?feature=share`).short, true)
+    assert.equal(parseYouTubeLink(`https://www.youtube.com/watch?v=${ID}&x=/shorts/`).short, false)
+    assert.equal(parseYouTubeLink(`https://youtu.be/${ID}?ref=https://www.youtube.com/shorts/x`).short, false)
+  })
+})
+
 describe('parseYouTubeLink', () => {
   it('hands out the canonical watch link and the thumbnail, and spots Shorts', () => {
     assert.deepEqual(parseYouTubeLink(`  https://youtu.be/${ID}?si=x  `), {
@@ -80,6 +106,12 @@ describe('checkYouTubeLink — can the blog embed it? (YouTube oEmbed)', () => {
       throw new TypeError('fetch failed')
     }}
     assert.equal((await checkYouTubeLink(`https://youtu.be/${ID}`, down)).status, 'unreachable')
+  })
+  it('a playlist is named as one, without calling YouTube', async () => {
+    const {calls, fetchImpl} = stub(200, {})
+    assert.equal((await checkYouTubeLink('https://www.youtube.com/embed/videoseries?list=PL1', {fetchImpl})).status, 'playlist')
+    assert.equal((await checkYouTubeLink('https://www.youtube.com/playlist?list=PL1', {fetchImpl})).status, 'playlist')
+    assert.equal(calls.length, 0)
   })
   it('never calls YouTube for something that is not a YouTube link', async () => {
     const {calls, fetchImpl} = stub(200, {})

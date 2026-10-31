@@ -28,7 +28,7 @@ import {
   wayOut,
 } from './lib/shared.js'
 import {copyText, el, toast} from './lib/ui.js'
-import {parseYouTubeLink} from './lib/youtube.js'
+import {isYouTubePlaylist, parseYouTubeLink} from './lib/youtube.js'
 
 const CONFIG = window.ADMIN_VIDEOS_CONFIG || {clerkPublishableKey: '', appUrl: 'https://kedaipal.com/app', missing: ['config']}
 const PATH = location.pathname.replace(/\/+$/, '') || '/videos'
@@ -47,6 +47,7 @@ const MSG = {
   tooLarge: 'Too large for a clip this length — export at 1080p or 720p.',
   gaveUp: 'The upload stopped after several retries. Check your connection and try again — nothing was saved.',
   expired: 'Your sign-in has expired. Sign in again — the file is still on your computer.',
+  ytPlaylist: "That's a playlist. Paste the link of a single video from it.",
   ytNotYouTube: "That's not a YouTube video link. Open the video on YouTube, press <strong>Share</strong> and copy the link it gives you.",
   ytNotEmbeddable: "YouTube won't let this video play on other sites. In YouTube Studio open the video and set <strong>Visibility</strong> to Public or Unlisted, then <strong>Show more → tick Allow embedding</strong>. Save, and paste the link again.",
   ytNotFound: 'YouTube can’t find this video. Check the link — or it may have been deleted.',
@@ -381,7 +382,7 @@ function youtubeCheckCard() {
 async function checkYouTube(value, result, button) {
   const parsed = parseYouTubeLink(value)
   if (!parsed) {
-    result.replaceChildren(notice('error', MSG.ytNotYouTube))
+    result.replaceChildren(notice('error', isYouTubePlaylist(value) ? MSG.ytPlaylist : MSG.ytNotYouTube))
     return
   }
   button.disabled = true
@@ -399,6 +400,7 @@ async function checkYouTube(value, result, button) {
 }
 
 function renderYouTubeResult(result, {status, video}) {
+  if (status === 'playlist') return result.replaceChildren(notice('error', MSG.ytPlaylist))
   if (status === 'not-youtube') return result.replaceChildren(notice('error', MSG.ytNotYouTube))
   if (status === 'not-embeddable') return result.replaceChildren(notice('error', MSG.ytNotEmbeddable), el('div', {class: 'actions'}, studioButton('Open YouTube Studio')))
   if (status === 'not-found') return result.replaceChildren(notice('error', MSG.ytNotFound))
