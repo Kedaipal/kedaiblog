@@ -409,7 +409,7 @@ function renderYouTubeResult(result, {status, video}) {
     'div',
     {class: `yt-video${video.short ? ' yt-video--short' : ''}`},
     el('img', {src: video.thumbnail, alt: '', loading: 'lazy', onerror: (e) => e.target.remove()}),
-    el('div', {}, el('strong', {class: 'yt-title', text: video.title || 'YouTube video'}), video.channel ? el('span', {class: 'yt-channel', text: video.channel}) : null, video.short ? el('span', {class: 'pill pill--muted', text: 'Short · plays tall'}) : null),
+    el('div', {}, el('strong', {class: 'yt-title', text: video.title || 'YouTube video'}), video.channel ? el('span', {class: 'yt-channel', text: video.channel}) : null, video.short ? el('span', {class: 'pill pill--muted', text: 'Short (vertical)'}) : null),
   )
   result.replaceChildren(
     status === 'ok' ? notice('ok', 'Good to go — the blog can play this video.') : notice('warn', MSG.ytUnreachable),

@@ -22,7 +22,12 @@ const SHORTS_PATH_RE = /^https:\/\/(?:www\.|m\.)?youtube\.com\/shorts\//
 
 /**
  * Any accepted YouTube link → {id, short, canonical, thumbnail}, else null.
- * `canonical` is what the page hands out: https://www.youtube.com/watch?v=<id>.
+ * `canonical` is the link the page hands out, and the blog's Video block reads
+ * a Short ONLY from a /shorts/ path (PR #4) — so a Short is handed out as
+ * https://www.youtube.com/shorts/<id> and everything else as
+ * https://www.youtube.com/watch?v=<id>. `short` here is the path rule alone;
+ * the Worker's oEmbed check can still find that a youtu.be / watch?v= link is
+ * a Short (see src/youtube.js) and re-issue it with `shortsLink`.
  * Mirrors PR #4's parseVideoLink: `embed/videoseries?list=…` matches the regex
  * with id "videoseries" but is a playlist, so it is refused.
  */
@@ -31,13 +36,17 @@ export function parseYouTubeLink(input) {
   const m = VIDEO_YOUTUBE_RE.exec(link)
   if (!m || m[1] === 'videoseries') return null
   const id = m[1]
+  const short = SHORTS_PATH_RE.test(link)
   return {
     id,
-    short: SHORTS_PATH_RE.test(link),
-    canonical: `https://www.youtube.com/watch?v=${id}`,
+    short,
+    canonical: short ? shortsLink(id) : watchLink(id),
     thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
   }
 }
+
+export const watchLink = (id) => `https://www.youtube.com/watch?v=${id}`
+export const shortsLink = (id) => `https://www.youtube.com/shorts/${id}`
 
 /** A refused link that is a playlist (so the page can say so, not "not a YouTube link"). */
 export function isYouTubePlaylist(input) {

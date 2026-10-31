@@ -6,7 +6,7 @@ One page for every blog video. It decides where the video lives and hands back
 | Video | Lives on | Link |
 |---|---|---|
 | Up to 5 minutes | R2 bucket `kedaipal-media`, served from `media.kedaipal.com` — free, no ads | `https://media.kedaipal.com/videos/<yyyy-mm>/<name>.mp4` (poster `.jpg` beside it) |
-| Longer (the podcast) | the Kedaipal YouTube channel — adaptive, free | `https://www.youtube.com/watch?v=<id>` |
+| Longer (the podcast) | the Kedaipal YouTube channel — adaptive, free | `https://www.youtube.com/watch?v=<id>`, or `https://www.youtube.com/shorts/<id>` for a Short |
 
 - **Clips** are uploaded through this Worker in 10 MB parts. They must be a
   web-ready MP4: the browser can decode it, it's an MP4 (not QuickTime), the
@@ -15,7 +15,10 @@ One page for every blog video. It decides where the video lives and hands back
 - **Long videos** are uploaded in YouTube Studio; the page shows the steps. Its
   **Already on YouTube?** box checks a link through YouTube's public oEmbed
   (no API key): a private, deleted or embed-disabled video is refused there,
-  before it reaches an article.
+  before it reaches an article. It also recognises a **Short** however it was
+  pasted (oEmbed answers portrait only when asked in the `/shorts/` form, so the
+  Worker always asks that way) and hands it out as `/shorts/<id>` — the only form
+  the Video block plays tall.
 - A short clip can go to YouTube instead (**Put it on YouTube instead**) — handy
   for a MOV that can't be re-exported. A long video never goes to R2.
 

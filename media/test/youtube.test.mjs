@@ -70,14 +70,16 @@ describe('playlists and Shorts — the same rules as PR #4', () => {
 })
 
 describe('parseYouTubeLink', () => {
-  it('hands out the canonical watch link and the thumbnail, and spots Shorts', () => {
+  it('hands out the watch link for a video and the /shorts/ link for a Short', () => {
     assert.deepEqual(parseYouTubeLink(`  https://youtu.be/${ID}?si=x  `), {
       id: ID,
       short: false,
       canonical: `https://www.youtube.com/watch?v=${ID}`,
       thumbnail: `https://i.ytimg.com/vi/${ID}/hqdefault.jpg`,
     })
-    assert.equal(parseYouTubeLink(`https://www.youtube.com/shorts/${ID}`).short, true)
+    const short = parseYouTubeLink(`https://www.youtube.com/shorts/${ID}?feature=share`)
+    assert.equal(short.short, true)
+    assert.equal(short.canonical, `https://www.youtube.com/shorts/${ID}`)
   })
   it('the canonical link it emits is itself accepted', () => {
     assert.match(parseYouTubeLink(`https://youtu.be/${ID}`).canonical, VIDEO_YOUTUBE_RE)
@@ -89,10 +91,10 @@ describe('checkYouTubeLink — can the blog embed it? (YouTube oEmbed)', () => {
     const calls = []
     return {calls, fetchImpl: async (url) => (calls.push(url), new Response(body ? JSON.stringify(body) : 'x', {status}))}
   }
-  it('ok: asks oEmbed about the canonical link and returns title + channel', async () => {
-    const {calls, fetchImpl} = stub(200, {title: 'Kedaipal Podcast #1', author_name: 'Kedaipal'})
+  it('ok: asks oEmbed in the /shorts/ form (the only form that reveals a Short) and returns title + channel', async () => {
+    const {calls, fetchImpl} = stub(200, {title: 'Kedaipal Podcast #1', author_name: 'Kedaipal', width: 200, height: 113})
     const res = await checkYouTubeLink(`https://youtu.be/${ID}?si=x`, {fetchImpl})
-    assert.equal(calls[0], `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${ID}`)}&format=json`)
+    assert.equal(calls[0], `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/shorts/${ID}`)}&format=json`)
     assert.equal(res.status, 'ok')
     assert.equal(res.video.link, `https://www.youtube.com/watch?v=${ID}`)
     assert.equal(res.video.title, 'Kedaipal Podcast #1')
@@ -118,4 +120,67 @@ describe('checkYouTubeLink — can the blog embed it? (YouTube oEmbed)', () => {
     assert.equal((await checkYouTubeLink('https://vimeo.com/123', {fetchImpl})).status, 'not-youtube')
     assert.equal(calls.length, 0)
   })
+})
+
+/*
+ * Shorts end to end. Measured live on 31 Oct 2026: oEmbed answers 113×200 for a
+ * real Short asked as /shorts/<id>, and 200×113 for a normal video asked the
+ * same way (and 200×113 for anything asked as watch?v= / youtu.be).
+ */
+describe('Shorts come out as /shorts/<id>, however they were pasted', () => {
+  const PORTRAIT = {title: 'A Short', author_name: 'Kedaipal', width: 113, height: 200}
+  const LANDSCAPE = {title: 'A video', author_name: 'Kedaipal', width: 200, height: 113}
+  const oembed = (body) => ({fetchImpl: async () => new Response(JSON.stringify(body), {status: 200})})
+
+  for (const pasted of [`https://www.youtube.com/shorts/${ID}`, `https://youtu.be/${ID}?si=x`, `https://www.youtube.com/watch?v=${ID}&feature=share`]) {
+    it(`a Short pasted as ${pasted.replace(ID, '<id>')} → /shorts/<id>`, async () => {
+      const res = await checkYouTubeLink(pasted, oembed(PORTRAIT))
+      assert.equal(res.status, 'ok')
+      assert.equal(res.video.short, true)
+      assert.equal(res.video.link, `https://www.youtube.com/shorts/${ID}`)
+    })
+  }
+  it('a landscape video stays a watch link', async () => {
+    const res = await checkYouTubeLink(`https://youtu.be/${ID}`, oembed(LANDSCAPE))
+    assert.equal(res.video.short, false)
+    assert.equal(res.video.link, `https://www.youtube.com/watch?v=${ID}`)
+  })
+  it('the /shorts/ path stays a Short even if oEmbed answers landscape (path first)', async () => {
+    const res = await checkYouTubeLink(`https://www.youtube.com/shorts/${ID}`, oembed(LANDSCAPE))
+    assert.equal(res.video.link, `https://www.youtube.com/shorts/${ID}`)
+  })
+  it('if oEmbed fails, nothing changes: the path rule decides', async () => {
+    const down = {fetchImpl: async () => new Response('x', {status: 503})}
+    assert.equal((await checkYouTubeLink(`https://youtu.be/${ID}`, down)).video.link, `https://www.youtube.com/watch?v=${ID}`)
+    assert.equal((await checkYouTubeLink(`https://www.youtube.com/shorts/${ID}`, down)).video.link, `https://www.youtube.com/shorts/${ID}`)
+  })
+})
+
+/*
+ * Cross-PR contract: the YouTube branch of the Video block's parser, copied
+ * verbatim from Kedaipal/kedaiblog#4 (js/sanity.js parseVideoLink, ad0ee31).
+ * Every link this page emits must parse there with the SAME short value.
+ */
+function blockParseYouTube(s) {
+  const m = VIDEO_YOUTUBE_RE.exec(s)
+  if (m && m[1] !== 'videoseries') return {kind: 'youtube', id: m[1], short: /^https:\/\/(?:www\.|m\.)?youtube\.com\/shorts\//.test(s)}
+  return null
+}
+describe('every link the page emits plays the right shape in the Video block', () => {
+  const cases = [
+    ['Short pasted as /shorts/', `https://www.youtube.com/shorts/${ID}`, {width: 113, height: 200}, true],
+    ['Short pasted as youtu.be', `https://youtu.be/${ID}`, {width: 113, height: 200}, true],
+    ['Short pasted as watch?v=', `https://www.youtube.com/watch?v=${ID}`, {width: 113, height: 200}, true],
+    ['video pasted as youtu.be', `https://youtu.be/${ID}?si=x`, {width: 200, height: 113}, false],
+    ['video in a playlist', `https://www.youtube.com/watch?v=${ID}&list=PL1`, {width: 200, height: 113}, false],
+  ]
+  for (const [label, pasted, dims, short] of cases) {
+    it(label, async () => {
+      const res = await checkYouTubeLink(pasted, {fetchImpl: async () => new Response(JSON.stringify({title: 't', ...dims}), {status: 200})})
+      const block = blockParseYouTube(res.video.link)
+      assert.ok(block, `the block refused ${res.video.link}`)
+      assert.equal(block.id, ID)
+      assert.equal(block.short, short, `${res.video.link} should be short=${short} in the block`)
+    })
+  }
 })
