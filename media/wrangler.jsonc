@@ -1,0 +1,51 @@
+{
+  // admin.kedaipal.com/videos — get a video into a blog post. Clips up to 5
+  // minutes are stored in R2 (media.kedaipal.com); longer videos go on the
+  // Kedaipal YouTube channel, and this page checks their link. A SECOND Worker
+  // in this repo, separate from the public site (../wrangler.jsonc).
+  //
+  // Deploys via Cloudflare Workers Builds (its own Workers project importing
+  // this repo with root directory `media/`, build `npm ci`, deploy
+  // `npx wrangler deploy`, preview builds OFF). Never `wrangler deploy` from a laptop.
+  "name": "kedaipal-admin-videos",
+  "account_id": "8eb311132741dadfcd1fef79b8b7c1df",
+  "main": "src/worker.js",
+  // Same date as the other Kedaipal Workers, and the newest the pinned
+  // Wrangler (4.80.0) accepts.
+  "compatibility_date": "2025-09-02",
+  "workers_dev": false,
+  // admin.kedaipal.com's first tenant, so for now the Worker owns the whole
+  // host ("/" redirects to /videos). When the admin app is built it takes the
+  // host and this becomes a route: {"pattern": "admin.kedaipal.com/videos*",
+  // "zone_name": "kedaipal.com"}. Everything here already lives under /videos.
+  "routes": [{"pattern": "admin.kedaipal.com", "custom_domain": true}],
+  // The page shell, CSS and JS, served by src/worker.js (run_worker_first) so
+  // the Worker decides the paths; html_handling "none" keeps /videos from being
+  // redirected to /videos/.
+  "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true, "html_handling": "none"},
+  // Clips land here; media.kedaipal.com is this bucket's public custom domain
+  // (dashboard, ClickUp z8r3fdwwpk §A). The bucket must exist before the first
+  // deploy. `npm run dev` uses wrangler's local simulator instead.
+  "r2_buckets": [{"binding": "MEDIA", "bucket_name": "kedaipal-media"}],
+  // PRODUCTION values, all public. `npm run dev` overrides the Clerk/Convex
+  // ones with the DEV instance + DEV deployment (package.json), so local work
+  // never touches production. Declared here, not in the dashboard, because
+  // `wrangler deploy` replaces dashboard vars with the ones in this file.
+  // No secrets: R2 is a binding, and the YouTube check needs no key.
+  "vars": {
+    // The Kedaipal app's production Clerk instance (Frontend API clerk.kedaipal.com).
+    "CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsua2VkYWlwYWwuY29tJA",
+    // `iss` of every Clerk token; also where the JWKS lives (/.well-known/jwks.json).
+    "CLERK_ISSUER": "https://clerk.kedaipal.com",
+    // Allowed `azp` (the origin a token was minted for). Comma-separated.
+    "CLERK_AUTHORIZED_PARTIES": "https://admin.kedaipal.com",
+    // The main app's production Convex deployment — holds the one access list
+    // (query `adminAccess:mine` must return the "videos" area).
+    "CONVEX_URL": "https://peaceful-falcon-152.convex.cloud",
+    // Where "Go to the Kedaipal app" points.
+    "APP_URL": "https://kedaipal.com/app",
+    // Where clips are served from — the bucket's public custom domain.
+    "PUBLIC_MEDIA_BASE": "https://media.kedaipal.com"
+  },
+  "observability": {"enabled": true}
+}
