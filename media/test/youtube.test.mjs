@@ -77,9 +77,12 @@ describe('parseYouTubeLink', () => {
       canonical: `https://www.youtube.com/watch?v=${ID}`,
       thumbnail: `https://i.ytimg.com/vi/${ID}/hqdefault.jpg`,
     })
-    const short = parseYouTubeLink(`https://www.youtube.com/shorts/${ID}?feature=share`)
-    assert.equal(short.short, true)
-    assert.equal(short.canonical, `https://www.youtube.com/shorts/${ID}`)
+    for (const pasted of [`https://www.youtube.com/shorts/${ID}?feature=share`, `https://m.youtube.com/shorts/${ID}`, `https://youtube.com/shorts/${ID}/`]) {
+      const short = parseYouTubeLink(pasted)
+      assert.equal(short.short, true, pasted)
+      assert.equal(short.canonical, `https://www.youtube.com/shorts/${ID}`, pasted)
+    }
+    assert.equal(parseYouTubeLink(`https://www.youtube.com/live/${ID}`).canonical, `https://www.youtube.com/watch?v=${ID}`)
   })
   it('the canonical link it emits is itself accepted', () => {
     assert.match(parseYouTubeLink(`https://youtu.be/${ID}`).canonical, VIDEO_YOUTUBE_RE)
