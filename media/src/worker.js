@@ -21,7 +21,8 @@
  *   GET  /videos/api/me                {userId, areas, allowed, hasStore}
  *   POST /videos/api/r2/create         reserve a never-overwritten key, start multipart
  *   PUT  /videos/api/r2/part?key&uploadId&n   one ≤ 10 MB part
- *   POST /videos/api/r2/complete       finish (refuses if the key appeared meanwhile)
+ *   POST /videos/api/r2/complete       finish; idempotent per attempt (a repeat after a
+ *                                      lost response is a 200, a stranger's object a 409)
  *   POST /videos/api/r2/abort          give up
  *   PUT  /videos/api/r2/poster?key     the captured JPEG
  *   GET  /videos/api/youtube?url=      can this YouTube video be embedded?
@@ -120,7 +121,11 @@ async function r2Create(request, env, auth) {
   const key = videoKey(month, name)
   const pKey = posterKey(month, name)
 
-  const customMetadata = {originalName: fileName.slice(0, 200), uploadedBy: auth.claims.sub}
+  // `attempt` is this upload's own mark. It is written onto the object, so a
+  // repeated `complete` (the browser lost the response, then retried) can tell
+  // "my clip, already landed" from "someone else took the name meanwhile".
+  const attempt = crypto.randomUUID()
+  const customMetadata = {originalName: fileName.slice(0, 200), uploadedBy: auth.claims.sub, attempt}
   if (Number.isFinite(duration) && duration > 0) customMetadata.duration = String(Math.round(duration * 100) / 100)
   if (Number.isFinite(width) && Number.isFinite(height)) customMetadata.dimensions = `${width}x${height}`
 
@@ -132,6 +137,7 @@ async function r2Create(request, env, auth) {
     key,
     posterKey: pKey,
     uploadId: upload.uploadId,
+    attempt,
     name,
     wantedName: wanted,
     suffixed,
@@ -163,20 +169,26 @@ async function r2Complete(request, env) {
   } catch {
     return fail(400, 'bad-request', 'Bad request body')
   }
-  const {key, uploadId, parts} = body
-  if (!VIDEO_KEY_RE.test(key || '') || !uploadId || !Array.isArray(parts) || !parts.length) return fail(400, 'bad-request', 'key, uploadId and parts are required')
+  const {key, uploadId, attempt, parts} = body
+  if (!VIDEO_KEY_RE.test(key || '') || !uploadId || typeof attempt !== 'string' || !attempt || !Array.isArray(parts) || !parts.length) {
+    return fail(400, 'bad-request', 'key, uploadId, attempt and parts are required')
+  }
   const clean = parts.map((p) => ({partNumber: Number(p.partNumber), etag: String(p.etag ?? '')}))
   if (clean.some((p) => !Number.isInteger(p.partNumber) || !p.etag)) return fail(400, 'bad-request', 'Malformed parts list')
 
   const upload = env.MEDIA.resumeMultipartUpload(key, uploadId)
-  // Never overwrite — even if the name was taken between create and now.
-  if (await env.MEDIA.head(key)) {
+  const existing = await env.MEDIA.head(key)
+  if (existing) {
+    // This very upload already completed — the browser lost the response and
+    // asked again. Say so; the object is the one it made, nothing to redo.
+    if (existing.customMetadata?.attempt === attempt) return json({key, url: clipLink(publicBase(env), key), size: existing.size, alreadyComplete: true})
+    // Never overwrite — the name was taken between create and now.
     await upload.abort().catch(() => {})
     return fail(409, 'taken', 'A clip with this name appeared while you were uploading. Upload again to get a new name.')
   }
   try {
     const object = await upload.complete(clean)
-    return json({key, url: clipLink(publicBase(env), key), size: object.size})
+    return json({key, url: clipLink(publicBase(env), key), size: object.size, alreadyComplete: false})
   } catch (err) {
     return fail(502, 'storage', `Could not finish the upload: ${err.message}`)
   }

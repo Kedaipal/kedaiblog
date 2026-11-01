@@ -46,6 +46,7 @@ const MSG = {
   movHint: 'MP4 means H.264 video + AAC audio — in HandBrake: preset <em>Fast 720p30</em> (or 1080p30), tick <em>Web Optimized</em>.',
   tooLarge: 'Too large for a clip this length — export at 1080p or 720p.',
   gaveUp: 'The upload stopped after several retries. Check your connection and try again — nothing was saved.',
+  finishGaveUp: 'Every part is up, but the finishing step could not be confirmed. Check your connection and try again — it picks up here, and nothing is uploaded twice.',
   expired: 'Your sign-in has expired. Sign in again — the file is still on your computer.',
   ytPlaylist: "That's a playlist. Paste the link of a single video from it.",
   ytNotYouTube: "That's not a YouTube video link. Open the video on YouTube, press <strong>Share</strong> and copy the link it gives you.",
@@ -130,6 +131,23 @@ const sleep = (ms, signal) =>
     const t = setTimeout(resolve, ms)
     signal?.addEventListener('abort', () => (clearTimeout(t), reject(new DOMException('aborted', 'AbortError'))), {once: true})
   })
+
+/**
+ * Run `fn` again on a dropped connection or a 5xx — up to 3 retries with
+ * backoff. A cancel or any 4xx is final. `onRetry(attempt)` repaints.
+ */
+async function withRetry(fn, {signal, onRetry, gaveUp = MSG.gaveUp}) {
+  for (let attempt = 0; ; ) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (err.name === 'AbortError' || (err.status >= 400 && err.status < 500)) throw err
+      if (++attempt > 3) throw new ApiError(0, 'gave-up', gaveUp)
+      onRetry(attempt)
+      await sleep(1000 * 2 ** (attempt - 1), signal)
+    }
+  }
+}
 
 /* ---------- small render helpers ---------- */
 
@@ -712,7 +730,7 @@ function doneView({link, posterUrl, created}) {
 
 async function startUpload() {
   const mine = current
-  const {file, meta, poster} = mine
+  const {file, meta} = mine
   const controller = new AbortController()
   mine.controller = controller
   const {signal} = controller
@@ -732,33 +750,14 @@ async function startUpload() {
     }
     for (let n = 1; n <= total; n++) {
       const blob = file.slice((n - 1) * created.partSize, Math.min(n * created.partSize, file.size))
-      for (let attempt = 0; ; ) {
-        try {
-          paint(0, n)
-          const q = `key=${encodeURIComponent(created.key)}&uploadId=${encodeURIComponent(created.uploadId)}&n=${n}`
-          const part = await putBytes(`/videos/api/r2/part?${q}`, blob, {signal, onProgress: (loaded) => paint(loaded, n)})
-          parts.push({partNumber: part.partNumber, etag: part.etag})
-          doneBytes += blob.size
-          break
-        } catch (err) {
-          if (err.name === 'AbortError' || (err.status >= 400 && err.status < 500)) throw err
-          if (++attempt > 3) throw new ApiError(0, 'gave-up', MSG.gaveUp)
-          ui.set(null, `<strong>Connection dropped</strong> · retrying part ${n} (attempt ${attempt} of 3)…`, '')
-          await sleep(1000 * 2 ** (attempt - 1), signal)
-        }
-      }
+      const q = `key=${encodeURIComponent(created.key)}&uploadId=${encodeURIComponent(created.uploadId)}&n=${n}`
+      const part = await withRetry(() => (paint(0, n), putBytes(`/videos/api/r2/part?${q}`, blob, {signal, onProgress: (loaded) => paint(loaded, n)})), {
+        signal,
+        onRetry: (attempt) => ui.set(null, `<strong>Connection dropped</strong> · retrying part ${n} (attempt ${attempt} of 3)…`, ''),
+      })
+      parts.push({partNumber: part.partNumber, etag: part.etag})
+      doneBytes += blob.size
     }
-    ui.set(100, '<strong>100%</strong> · finishing', formatBytes(file.size))
-    const completed = await api('POST', '/videos/api/r2/complete', {key: created.key, uploadId: created.uploadId, parts}, {signal})
-    let posterUrl = null
-    try {
-      posterUrl = (await putBytes(`/videos/api/r2/poster?key=${encodeURIComponent(created.posterKey)}`, poster, {signal})).url
-    } catch (err) {
-      if (err.name === 'AbortError') throw err
-      console.warn('poster upload failed', err) // the clip is up; a missing poster isn't worth failing it for
-    }
-    mine.controller = null
-    doneView({link: completed.url, posterUrl, created})
   } catch (err) {
     if (created) api('POST', '/videos/api/r2/abort', {key: created.key, uploadId: created.uploadId}).catch(() => {})
     mine.controller = null
@@ -766,7 +765,55 @@ async function startUpload() {
     if (err.name === 'AbortError') return clipDecision()
     if (err.status === 401) return errorView(MSG.expired, {signIn: true})
     if (err.status === 403) return noAccessView()
-    errorView(err.message || MSG.gaveUp, {retry: () => startUpload()})
+    return errorView(err.message || MSG.gaveUp, {retry: () => startUpload()})
+  }
+  mine.controller = null
+  return finishUpload(mine, created, parts)
+}
+
+/**
+ * Every part is up: complete, then the poster. Its own step because, from
+ * here on, "try again" must NEVER go back through `create` — the clip may
+ * already be live (the Worker finished but the response was lost), and a
+ * fresh create would mint `name-2` and upload the whole file a second time.
+ * `complete` is idempotent per `created.attempt`, so repeating it is safe;
+ * nothing is aborted here either, for the same reason.
+ */
+async function finishUpload(mine, created, parts) {
+  const controller = new AbortController()
+  mine.controller = controller
+  const {signal} = controller
+  const ui = uploadingView(created, () => controller.abort())
+  const size = formatBytes(mine.file.size)
+  ui.set(100, '<strong>100%</strong> · finishing', size)
+  try {
+    const completed = await withRetry(() => api('POST', '/videos/api/r2/complete', {key: created.key, uploadId: created.uploadId, attempt: created.attempt, parts}, {signal}), {
+      signal,
+      gaveUp: MSG.finishGaveUp,
+      onRetry: (attempt) => ui.set(100, `<strong>Connection dropped</strong> · confirming the upload (attempt ${attempt} of 3)…`, size),
+    })
+    let posterUrl = null
+    try {
+      posterUrl = (await putBytes(`/videos/api/r2/poster?key=${encodeURIComponent(created.posterKey)}`, mine.poster, {signal})).url
+    } catch (err) {
+      if (err.name === 'AbortError') throw err
+      // The clip is up; a missing poster isn't worth failing it for. A repeat
+      // finish finds the poster already there (409) and lands here too.
+      console.warn('poster upload failed', err)
+    }
+    mine.controller = null
+    doneView({link: completed.url, posterUrl, created})
+  } catch (err) {
+    mine.controller = null
+    if (err.name === 'AbortError') {
+      // The editor gave up on purpose: drop the parts (a no-op if complete already landed).
+      api('POST', '/videos/api/r2/abort', {key: created.key, uploadId: created.uploadId}).catch(() => {})
+      return mine === current ? clipDecision() : undefined
+    }
+    if (mine !== current) return
+    if (err.status === 401) return errorView(MSG.expired, {signIn: true})
+    if (err.status === 403) return noAccessView()
+    errorView(err.message || MSG.finishGaveUp, {retry: () => finishUpload(mine, created, parts)})
   }
 }
 

@@ -73,8 +73,8 @@ async function uploadClip(token, fileName, bytes) {
     const q = `key=${encodeURIComponent(created.key)}&uploadId=${created.uploadId}&n=${n}`
     parts.push(await (await call(`/videos/api/r2/part?${q}`, {method: 'PUT', token, body: bytes.subarray(off, off + created.partSize)})).json())
   }
-  const res = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, parts}})
-  return {created, res, completed: await res.json()}
+  const res = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, attempt: created.attempt, parts}})
+  return {created, res, completed: await res.json(), parts}
 }
 
 describe('pages', () => {
@@ -146,6 +146,8 @@ describe('clips on R2', () => {
     assert.equal(stored.httpMetadata.cacheControl, 'public, max-age=31536000, immutable')
     assert.equal(stored.customMetadata.uploadedBy, 'user_writer')
     assert.equal(stored.customMetadata.duration, '34.4')
+    assert.equal(stored.customMetadata.attempt, created.attempt)
+    assert.equal(completed.alreadyComplete, false)
   })
   it('the same name twice becomes -2, then -3; nothing is overwritten', async () => {
     const token = await tokenFor('user_writer')
@@ -160,11 +162,34 @@ describe('clips on R2', () => {
     const token = await tokenFor('user_writer')
     const created = await (await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName: 'race.mp4', size: 1}})).json()
     const part = await (await call(`/videos/api/r2/part?key=${encodeURIComponent(created.key)}&uploadId=${created.uploadId}&n=1`, {method: 'PUT', token, body: new Uint8Array([9])})).json()
-    await bucket.put(created.key, new Uint8Array([7])) // someone else got there first
-    const res = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, parts: [part]}})
+    await bucket.put(created.key, new Uint8Array([7]), {customMetadata: {attempt: 'someone-elses'}}) // someone else got there first
+    const res = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, attempt: created.attempt, parts: [part]}})
     assert.equal(res.status, 409)
     assert.deepEqual((await bucket.get(created.key)).body, new Uint8Array([7]))
     assert.equal(bucket.uploads.size, 0)
+  })
+  it('complete repeated after a lost response is a 200 for the same object — never a 409, never a second clip', async () => {
+    const token = await tokenFor('user_writer')
+    const bytes = new Uint8Array([1, 2, 3])
+    const {created, completed, parts} = await uploadClip(token, 'lost-response.mp4', bytes)
+    const again = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, attempt: created.attempt, parts}})
+    assert.equal(again.status, 200)
+    const body = await again.json()
+    assert.deepEqual({key: body.key, url: body.url, size: body.size}, {key: completed.key, url: completed.url, size: 3})
+    assert.equal(body.alreadyComplete, true)
+    assert.deepEqual((await bucket.get(created.key)).body, bytes)
+    assert.equal([...bucket.objects.keys()].filter((k) => k.endsWith('.mp4')).length, 1)
+    // A different attempt for the same key is the race case, not a repeat.
+    const stranger = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: 'up-x', attempt: 'not-mine', parts}})
+    assert.equal(stranger.status, 409)
+    assert.deepEqual((await bucket.get(created.key)).body, bytes)
+  })
+  it('complete without an attempt is a 400 before any R2 call', async () => {
+    const token = await tokenFor('user_writer')
+    const created = await (await call('/videos/api/r2/create', {method: 'POST', token, json: {fileName: 'no-attempt.mp4', size: 1}})).json()
+    const res = await call('/videos/api/r2/complete', {method: 'POST', token, json: {key: created.key, uploadId: created.uploadId, parts: [{partNumber: 1, etag: 'x'}]}})
+    assert.equal(res.status, 400)
+    assert.equal(bucket.uploads.size, 1) // still open — nothing was aborted or written
   })
   it('refuses keys it never issued, oversized parts and files over 2 GB', async () => {
     const token = await tokenFor('user_writer')

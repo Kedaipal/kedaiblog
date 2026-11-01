@@ -105,4 +105,5 @@ Never run `wrangler deploy` from a laptop.
 - `clerk.test.mjs`, `access.test.mjs` — token rejection cases; Convex fails closed.
 - `worker.test.mjs` — the Worker end to end with an in-memory R2: the gate (401,
   403 before any R2 write, 503), multipart upload, never-overwrite including a
-  race at complete, posters, abort, recent, the YouTube check.
+  race at complete, a repeated complete after a lost response (200, same object,
+  never a second clip), posters, abort, recent, the YouTube check.
