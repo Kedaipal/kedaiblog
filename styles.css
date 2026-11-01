@@ -570,6 +570,113 @@ h1, h2, h3, h4 {
 }
 .audio-transcript p { margin: 0.5rem 0 0; }
 
+/* ---------- Video (article body: clip on R2 or Cloudflare Stream) ---------- */
+.prose .video { margin-inline: 0; }
+/* The box takes its shape from --aspect (set inline by the renderer) before any
+   media loads, so the article never jumps when the poster or player arrives.
+   Black behind the frame: letterboxing a clip against black is the correct look. */
+.video-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--aspect, 16 / 9);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #000;
+  /* Same lift as the article banner */
+  box-shadow: 0 1px 2px rgb(15 23 41 / 0.04), 0 10px 30px -8px rgb(15 23 41 / 0.14);
+}
+.video-frame video,
+.video-frame iframe {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+.video-frame video { object-fit: contain; }
+/* Portrait clips: on wide screens, size the frame by height and centre it, so a 9:16
+   clip is a phone-shaped box, not a column-wide black tower. Phones keep full width. */
+@media (min-width: 768px) {
+  .video--portrait .video-frame {
+    width: auto;
+    height: min(80vh, 40rem);
+    max-width: 100%;
+    margin-inline: auto;
+  }
+}
+/* YouTube click-to-load: a thumbnail button until the reader presses play */
+.video-facade {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: #000;
+  cursor: pointer;
+}
+/* .prose figure img sets height: auto and a radius; the facade image must fill the frame */
+.prose .video-facade img {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  object-fit: cover;
+  transition: transform .4s ease, opacity .2s;
+}
+.video-facade::after {
+  /* Darken the bottom edge so the source label reads on any thumbnail */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgb(0 0 0 / 0.5), transparent 40%);
+  pointer-events: none;
+}
+.video-facade-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  width: 4.5rem;
+  height: 4.5rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  /* Solid brand green with a white ring: reads as our button even on a thumbnail
+     that shows its own play icons */
+  background: var(--green);
+  color: #fff;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.9), 0 8px 28px rgb(0 0 0 / 0.35);
+  transition: background-color .2s, transform .2s;
+}
+.video-facade-play svg { width: 1.875rem; height: 1.875rem; margin-left: 0.2rem; }
+.video-facade-source {
+  position: absolute;
+  left: 0.875rem;
+  bottom: 0.75rem;
+  z-index: 1;
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: rgb(255 255 255 / 0.9);
+}
+.video-facade:hover .video-facade-play,
+.video-facade:focus-visible .video-facade-play { background: var(--green-deep); transform: translate(-50%, -50%) scale(1.06); }
+.prose .video-facade:hover img { transform: scale(1.02); }
+.video-facade:focus-visible { outline: 3px solid var(--green); outline-offset: -3px; }
+@media (max-width: 767px) {
+  .video-facade-play { width: 3.75rem; height: 3.75rem; }
+  .video-facade-play svg { width: 1.5rem; height: 1.5rem; }
+  .prose .video-facade:hover img { transform: none; }
+}
+.video-frame video:focus-visible,
+.video-frame iframe:focus-visible { outline: 3px solid var(--green); outline-offset: -3px; }
+.prose .video figcaption strong { color: var(--foreground); font-weight: 600; }
+
 /* ---------- Image gallery (article body) ---------- */
 .prose .gallery { margin-inline: 0; }
 .gallery-track { display: grid; gap: 0.75rem; }
