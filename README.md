@@ -15,6 +15,7 @@ A static blog (HTML/CSS/JS) styled like kedaipal.com. Posts are managed in Sanit
 | `js/demo-data.js` | Sample posts. Shown only if `projectId` in `js/config.js` is empty; also used by `npm run seed` |
 | `studio/` | Sanity Studio, where posts are written |
 | `tests/` | Checks for the HTML renderer (`npm test`, no dependencies) |
+| `media/` | The `admin.kedaipal.com/videos` Worker: writers sign in with their Kedaipal account; clips up to 5 min are stored on `media.kedaipal.com` (R2), longer videos go on YouTube and the page checks their link. Own `wrangler.jsonc` and README |
 
 ## Run locally
 
@@ -26,6 +27,11 @@ python3 -m http.server 3000        # then open http://localhost:3000
 cd studio
 npm install                        # first time only
 npm run dev                        # then open http://localhost:3333
+
+# The video page, admin.kedaipal.com/videos (see media/README.md)
+cd media
+npm install                        # first time only
+npm run dev:offline                # no accounts needed; then open http://localhost:8787/videos
 ```
 
 ## Writing posts
@@ -64,8 +70,11 @@ video goes depends on its length:
    if not, then gives you **one link**.
 
 **A long video:** upload it to the Kedaipal YouTube channel as usual (public or unlisted,
-with embedding allowed), then copy its link. The admin page's "Already on YouTube?" box
-can check that it will play on the blog.
+with embedding allowed), then copy its link. Paste it into the admin page's **Already on
+YouTube?** box: it checks the video will play on the blog and gives back the link to use.
+For a Short that is a `youtube.com/shorts/…` link, even if you pasted a `youtu.be` one,
+because the blog shows a video vertically only from a `/shorts/` link. Use a single
+video's link: playlists are refused.
 
 **Then, in the Studio:** in the post body press **+ → Video** and paste the link. The
 Studio shows **Clip** or **YouTube** and a thumbnail; anything else is refused. Optional: a
@@ -74,7 +83,8 @@ in bold under the video) and a **Caption**.
 
 The article reserves the right-sized box before anything loads, so the page never jumps,
 and nothing autoplays. A YouTube video shows only its thumbnail until the reader presses
-play: no YouTube script or cookies load before that. Shorts get a vertical box.
+play: no YouTube script or cookies load before that. A Short (a `youtube.com/shorts/…`
+link) gets a vertical box.
 
 Links to Cloudflare Stream (`…cloudflarestream.com/<uid>/iframe`) are still understood but
 not set up: the account has no Stream, so `STREAM_CUSTOMER_CODE` in `js/config.js` is empty
@@ -95,9 +105,10 @@ record — there is nothing to click in the dashboard to keep it working.
 | The website | this repo | push to `main` → Cloudflare Workers Builds |
 | The posts | Sanity project `cvycqoxz` | published in the Studio; live within ~a minute |
 | The Studio | `studio/` in this repo | `cd studio && npm run deploy` → <https://kedaipal-blog.sanity.studio> |
+| The video page | `media/` in this repo | push to `main` → its own Workers Builds project (root `media/`) → <https://admin.kedaipal.com/videos>, behind the app's Clerk login. See `media/README.md` |
 
-`npm run build` copies **only** the public site into `dist/` — `studio/` is never
-published. It is an allow-list; see the comment at the top of `build.mjs` before
+`npm run build` copies **only** the public site into `dist/` — `studio/` and
+`media/` are never published. It is an allow-list; see the comment at the top of `build.mjs` before
 adding a new top-level folder.
 
 To deploy by hand from a clean checkout: `npm run deploy`.

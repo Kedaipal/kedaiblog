@@ -1,0 +1,4 @@
+node_modules
+.wrangler
+# Local-only secrets for `wrangler dev` (e.g. STREAM_API_TOKEN). Never committed.
+.dev.vars
