@@ -14,6 +14,7 @@ A static blog (HTML/CSS/JS) styled like kedaipal.com. Posts are managed in Sanit
 | `js/sanity.js` | Fetches posts from Sanity and turns them into HTML |
 | `js/demo-data.js` | Sample posts. Shown only if `projectId` in `js/config.js` is empty; also used by `npm run seed` |
 | `studio/` | Sanity Studio, where posts are written |
+| `tests/` | Checks for the HTML renderer (`npm test`, no dependencies) |
 | `media/` | The `admin.kedaipal.com/videos` Worker: writers sign in with their Kedaipal account; clips up to 5 min are stored on `media.kedaipal.com` (R2), longer videos go on YouTube and the page checks their link. Own `wrangler.jsonc` and README |
 
 ## Run locally
@@ -26,6 +27,11 @@ python3 -m http.server 3000        # then open http://localhost:3000
 cd studio
 npm install                        # first time only
 npm run dev                        # then open http://localhost:3333
+
+# The video page, admin.kedaipal.com/videos (see media/README.md)
+cd media
+npm install                        # first time only
+npm run dev:offline                # no accounts needed; then open http://localhost:8787/videos
 ```
 
 ## Writing posts
@@ -40,11 +46,49 @@ In the Studio, open **Posts → +** and work down the form:
   - Only the card image is needed; the banners fall back to it when empty
 - **Summary, category, author, publish date**
 - **Feature on blog home:** puts the post in the large top slot (the newest ticked post wins)
-- **Body:** use the style menu for Heading, Subheading and Quote; the list buttons for bullets and numbers; and the **+** button to insert an **Image**, **Image gallery** (up to 10 images: a grid of up to 4 on desktop with a "+N" tile for the rest, a swipeable carousel of all images on phones, and each opens full size when clicked), **Audio** (MP3/M4A, with an optional caption or transcript), **Tip box** or **Divider**
+- **Body:** use the style menu for Heading, Subheading and Quote; the list buttons for bullets and numbers; and the **+** button to insert an **Image**, **Image gallery** (up to 10 images: a grid of up to 4 on desktop with a "+N" tile for the rest, a swipeable carousel of all images on phones, and each opens full size when clicked), **Audio** (MP3/M4A, with an optional caption or transcript), **Video** (a clip from admin.kedaipal.com/videos or a link from our YouTube channel — see [Adding a video](#adding-a-video)), **Tip box** or **Divider**
 - **Cover when there is no image** (collapsed): the text and colour of the branded block used when no cover is uploaded
 
 Click **Publish**. Drafts never appear on the site. New posts show within about a minute.
 Categories (and their order in the filter bar) are edited under **Categories**.
+
+### Adding a video
+
+Videos are never uploaded to Sanity (every play would count against its quota). Where a
+video goes depends on its length:
+
+| Video | Where it goes | Why |
+|---|---|---|
+| A clip of 5 minutes or less | <https://admin.kedaipal.com/videos>, stored on `media.kedaipal.com` | Free, plays straight in the page |
+| Anything longer, such as a podcast | The Kedaipal YouTube channel | YouTube adjusts the quality to each reader's connection, so long videos keep playing on weak mobile data |
+
+**A clip:**
+
+1. Open <https://admin.kedaipal.com/videos> and sign in with your Kedaipal account (the
+   same login as the Kedaipal app). Your account must be on the blog editors list; ask Zaki.
+2. Drag the clip in. The page checks it will play in a browser and tells you how to fix it
+   if not, then gives you **one link**.
+
+**A long video:** upload it to the Kedaipal YouTube channel as usual (public or unlisted,
+with embedding allowed), then copy its link. Paste it into the admin page's **Already on
+YouTube?** box: it checks the video will play on the blog and gives back the link to use.
+For a Short that is a `youtube.com/shorts/…` link, even if you pasted a `youtu.be` one,
+because the blog shows a video vertically only from a `/shorts/` link. Use a single
+video's link: playlists are refused.
+
+**Then, in the Studio:** in the post body press **+ → Video** and paste the link. The
+Studio shows **Clip** or **YouTube** and a thumbnail; anything else is refused. Optional: a
+**Poster** image if you want a different frame than the automatic one, a **Title** (shown
+in bold under the video) and a **Caption**.
+
+The article reserves the right-sized box before anything loads, so the page never jumps,
+and nothing autoplays. A YouTube video shows only its thumbnail until the reader presses
+play: no YouTube script or cookies load before that. A Short (a `youtube.com/shorts/…`
+link) gets a vertical box.
+
+Links to Cloudflare Stream (`…cloudflarestream.com/<uid>/iframe`) are still understood but
+not set up: the account has no Stream, so `STREAM_CUSTOMER_CODE` in `js/config.js` is empty
+and the site skips them. The Studio says so if one is pasted.
 
 ## Deployment
 
@@ -90,6 +134,7 @@ sanity.io/manage → project → Members → Invite.
 
 ## Notes
 
+- `npm test` runs the renderer checks (the Video link parser and player markup) with Node's built-in test runner.
 - After changing `styles.css` or anything in `js/`, bump the `?v=` number on those links in `index.html` and `post.html` (e.g. to today's date) so browsers download the new files instead of a cached copy.
 
 - Articles are rendered in the browser, so search engines that don't run JavaScript won't see post text.
