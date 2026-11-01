@@ -16,7 +16,6 @@
 import {containerOf, probeFastStart, PROBE_BYTES} from './lib/mp4.js'
 import {
   CLIP_MAX_BYTES,
-  CLIP_MAX_SECONDS,
   YOUTUBE_STUDIO_URL,
   decideDestination,
   formatBytes,
@@ -736,12 +735,12 @@ async function startUpload() {
   const {signal} = controller
   const cancel = () => controller.abort()
   let created
+  const parts = [] // {partNumber, etag} in order — handed to finishUpload once every part is up
   try {
     uploadingView(null, cancel).set(0, '<strong>0%</strong>', `0 B of ${formatBytes(file.size)}`)
     created = await api('POST', '/videos/api/r2/create', {fileName: file.name, size: file.size, duration: meta.duration, width: meta.width, height: meta.height}, {signal})
     const total = Math.ceil(file.size / created.partSize)
     const ui = uploadingView(created, cancel)
-    const parts = []
     let doneBytes = 0
     const paint = (loaded, n) => {
       const sent = Math.min(file.size, doneBytes + loaded)
